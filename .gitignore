@@ -59,3 +59,7 @@ app.*.map.json
 /eval_real/
 /eval_out/
 /eval_bench_*/
+
+# Môi trường Python ảnh riêng tư và ảnh cá nhân (không đưa lên git)
+/.venv/
+/zalodata/
