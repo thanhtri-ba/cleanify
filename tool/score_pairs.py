@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Tính điểm từng cặp ảnh: Hamming PDQ, cosine DINO, cosine ReID (OSNet).
+"""Tính điểm từng cặp ảnh: Hamming PDQ, cosine embedding (cột cos_dino; mặc định MobileNet,
+đã trừ vector trung bình giống app), cosine ReID (OSNet).
 
 Đọc <out>/manifest.csv (nếu có) hoặc candidates.csv, ghi <out>/scores.csv và
 <out>/thumbs128/ + <out>/pdq_map.csv (thumbnail 128px để tool/dump_pdq.dart băm
@@ -33,6 +34,10 @@ def main() -> int:
     ap.add_argument("--models", type=Path, default=Path("assets/models"))
     ap.add_argument("--pdq-dart", type=Path, help="CSV do tool/dump_pdq.dart tạo ra")
     ap.add_argument("--no-cache", action="store_true")
+    ap.add_argument("--embed", default="mobilenet",
+                    help="tên model embedding trong --models (mobilenet hoặc dino); cột kết quả vẫn là cos_dino")
+    ap.add_argument("--no-center", action="store_true",
+                    help="KHÔNG trừ vector trung bình (cosine thô). Mặc định trừ trung bình giống app.")
     a = ap.parse_args()
 
     pairs_file = a.out / ("manifest.csv" if (a.out / "manifest.csv").exists() else "candidates.csv")
@@ -45,13 +50,13 @@ def main() -> int:
     print(f"{len(pairs)} cặp, {len(assets)} ảnh duy nhất (đọc từ {pairs_file.name}).")
 
     dino = reid = None
-    for name in ("dino", "osnet"):
+    for name in (a.embed, "osnet"):
         mp = a.models / f"{name}.onnx"
         if not mp.exists():
             print(f"CẢNH BÁO: không thấy {mp}, bỏ qua {name}.", file=sys.stderr)
             continue
         emb = ec.Embedder(mp)
-        if name == "dino":
+        if name == a.embed:
             dino = emb
         else:
             reid = emb
@@ -70,7 +75,7 @@ def main() -> int:
     for n, asset in enumerate(assets, 1):
         path = ec.resolve_asset(asset, a.src, a.out)
         st = path.stat()
-        key = (asset, st.st_size, int(st.st_mtime), dino is not None, reid is not None)
+        key = (asset, st.st_size, int(st.st_mtime), a.embed if dino is not None else None, reid is not None)
         fname = hashlib.sha1(asset.encode()).hexdigest()[:12] + ".jpg"
         pdq_files[asset] = fname
         if key in cache and (thumbs_dir / fname).exists():
@@ -121,6 +126,27 @@ def main() -> int:
                   f"tối đa {max(diffs)} / 256, trên {len(diffs)} ảnh.")
         else:
             print("CẢNH BÁO: --pdq-dart không khớp ảnh nào, vẫn dùng bản port Python.", file=sys.stderr)
+
+    # Giống app (centerEmbeddings): trừ vector trung bình rồi L2-normalize lại.
+    # Trung bình lấy trên toàn bộ ảnh của tập đánh giá; app lấy trên ~256 ảnh rải đều
+    # thư viện, nên tập đánh giá cần đa dạng (không chỉ ảnh trong các cặp ứng viên).
+    vecs = [f[1] for f in feats.values() if f[1] is not None]
+    if dino is not None and not a.no_center:
+        if len(vecs) >= 32:
+            mean = np.mean(vecs, axis=0)
+
+            def center(v):
+                if v is None:
+                    return None
+                c = v - mean
+                n = float(np.linalg.norm(c))
+                return c / n if n > 0 else c
+
+            feats = {k: (f[0], center(f[1]), f[2]) for k, f in feats.items()}
+            print(f"Đã trừ vector trung bình ({len(vecs)} ảnh) trước khi tính cosine.")
+        else:
+            print(f"CẢNH BÁO: chỉ {len(vecs)} embedding (< 32), không trừ trung bình; "
+                  "cosine là cosine thô, KHÔNG khớp với app.", file=sys.stderr)
 
     def cos(x, y):
         return float(np.dot(x, y)) if x is not None and y is not None else None

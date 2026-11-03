@@ -1,5 +1,5 @@
 import 'dart:io' show ProcessInfo;
-import 'dart:isolate';
+import 'dart:isolate' show Isolate;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -9,8 +9,10 @@ import 'package:photo_manager/photo_manager.dart';
 
 import '../../engines/dino/dino_engine.dart';
 import '../../engines/dino/dino_matcher.dart';
+import '../../engines/features/local_matcher.dart';
 import '../../engines/lsh/candidate_index.dart';
 import '../../engines/pdq/pdq_engine.dart';
+import '../platform/photo_edits.dart';
 import 'hash_worker.dart';
 import 'scan_diagnostics.dart';
 import 'scan_progress.dart';
@@ -23,10 +25,23 @@ class ScanConfig {
     this.shaBatch = 32,
     this.fileConcurrency = 4,
     this.maxHamming = 40,
-    this.useModel = true,
+    this.exactPairsBelow = 30000,
+    this.similarMaxHamming = 70,
+    this.useModel = false,
+    this.useSimilarModel = true,
+    this.similarModelK = 3,
+    this.similarModelFloor = 0.55,
     this.modelBatch = 16,
-    this.modelMinCosine = 0.84,
-    this.modelExactBelow = 8000,
+    this.modelMinCosine = 0.80,
+    this.modelMeanSample = 256,
+    this.modelMinMeanCount = 32,
+    this.useOriginalVersion = true,
+    this.useLocalFeatures = false,
+    this.localMinInliers = 45,
+    this.localNeighbors = 6,
+    this.localWindowMinutes = 5,
+    this.localMaxPairs = 3000,
+    this.localThumbSide = 640,
   });
 
   /// Số ảnh mỗi batch khi đọc thumbnail + băm PDQ.
@@ -42,24 +57,75 @@ class ScanConfig {
 
   /// Hai ảnh là trùng khi Hamming PDQ <= maxHamming trên 256 bit.
   /// 40 -> độ giống bit-hash >= 84,4% (100 * (1 - 40/256)).
+  /// Đã chốt 84% để giữ tỷ lệ gom nhầm thấp (nhóm này đi kèm chức năng xóa).
+  /// Từng thử 60 (76,6%) nhưng chưa kiểm chứng trên ảnh vở/ảnh tối/màn hình;
+  /// trên ảnh Zalo (50 ảnh) không có cặp nào nằm trong khoảng Hamming 41-60.
   final int maxHamming;
 
-  /// Bước AI (DINOv2) chạy SAU PDQ/SHA, chỉ cho ảnh chưa vào nhóm nào.
+  /// Số ảnh tối đa để so mọi cặp PDQ (chính xác). Lớn hơn thì LSH 16 band
+  /// bỏ sót nhiều cặp: đo trên 1500 ảnh, recall cháy x2 = 84% (exact 97%).
+  /// 30000 ảnh ~ 450 triệu cặp, khoảng 5 giây trên máy đo.
+  final int exactPairsBelow;
+
+  /// Ngưỡng Hamming cho nhóm "tương tự" (gần giống, chỉ để xem, không tự xóa).
+  /// Lớn hơn maxHamming. 70 -> độ giống >= 72,7%.
+  final int similarMaxHamming;
+
+  /// Bước AI (embedding ONNX) chạy SAU PDQ/SHA: chỉ xác minh cặp PDQ có
+  /// maxHamming < Hamming <= similarMaxHamming của ảnh chưa vào nhóm nào.
+  /// ĐANG TẮT (false) cho tới khi calibrate ngưỡng cho MobileNet.
   final bool useModel;
+
+  /// Dùng embedding để tìm thêm ảnh "tương tự" (cùng cảnh/chủ thể) mà PDQ bỏ sót.
+  /// Mỗi ảnh nối với [similarModelK] hàng xóm gần nhất có cosine (đã trừ trung bình)
+  /// >= [similarModelFloor]; mức cao hơn do người dùng chọn lúc xem. Không bao giờ
+  /// tự xóa. Lỗi/thiếu mô hình thì bỏ qua, không ảnh hưởng kết quả PDQ.
+  final bool useSimilarModel;
+  final int similarModelK;
+  final double similarModelFloor;
   final int modelBatch;
 
-  /// Hai ảnh là trùng theo mô hình khi cosine embedding >= ngưỡng này.
-  /// CHƯA calibrate trên ảnh thật: chỉnh bằng tool/calibrate.py (xem tool/EVAL.md).
+  /// Cặp được nâng thành "trùng" khi cosine của embedding ĐÃ TRỪ TRUNG BÌNH
+  /// (rồi L2-normalize) >= ngưỡng này. 0.80 chỉ là giá trị tạm, CHƯA calibrate:
+  /// chạy tool/calibrate.py (xem tool/EVAL.md) trên tập có cặp khó rồi mới bật
+  /// [useModel]. Thang cosine sau khi trừ trung bình khác thang cosine thô.
   final double modelMinCosine;
 
-  /// Số ảnh tối đa để so mọi cặp; lớn hơn thì dùng LSH (recall xấp xỉ).
-  final int modelExactBelow;
+  /// Số ảnh mẫu rải đều thư viện để tính vector trung bình, và số embedding tối
+  /// thiểu để trung bình có nghĩa (ít hơn thì bỏ qua bước AI).
+  final int modelMeanSample;
+  final int modelMinMeanCount;
+
+  /// iOS: với ảnh đã chỉnh sửa trong ứng dụng Ảnh, hash thêm BẢN GỐC và nối ảnh đó
+  /// với ảnh khác khi hash gốc gần hash hiện tại của ảnh kia (Hamming <= maxHamming).
+  /// Cặp này chỉ vào nhóm "tương tự", không bao giờ tự xóa. Android: bỏ qua.
+  final bool useOriginalVersion;
+
+  /// So khớp điểm đặc trưng cục bộ (ORB + RANSAC) cho các cặp chụp gần nhau về thời
+  /// gian mà PDQ không nối được (crop, chụp lệch khung, nét vẽ). Chỉ chạy khi
+  /// [ScanOrchestrator.localMatcher] khác null. Cặp đạt [localMinInliers] chỉ vào nhóm
+  /// "tương tự", không bao giờ tự xóa.
+  /// [localMinInliers]=45 CHƯA calibrate: đo trên 50 ảnh thật, cặp khác nội dung
+  /// thường <= 20 điểm, nhưng trang chữ dày có thể tới ~40 điểm dù khác trang.
+  final bool useLocalFeatures;
+  final int localMinInliers;
+
+  /// Mỗi ảnh chỉ so với tối đa [localNeighbors] ảnh kế tiếp theo thời gian chụp và
+  /// cách nhau không quá [localWindowMinutes] phút; tối đa [localMaxPairs] cặp mỗi
+  /// lần quét; ảnh thu nhỏ về cạnh [localThumbSide] px.
+  final int localNeighbors;
+  final int localWindowMinutes;
+  final int localMaxPairs;
+  final int localThumbSide;
 }
 
 class ScanOrchestrator {
-  ScanOrchestrator({this.config = const ScanConfig()});
+  ScanOrchestrator({this.config = const ScanConfig(), this.localMatcher});
 
   final ScanConfig config;
+
+  /// Bộ so khớp điểm đặc trưng (OpenCV). Null thì bước này bị bỏ qua.
+  final LocalFeatureMatcher? localMatcher;
 
   /// Điền kết quả vào [session]. Dữ liệu trung gian (hash, index) chỉ là biến
   /// cục bộ nên được giải phóng khi hàm kết thúc.
@@ -134,6 +200,7 @@ class ScanOrchestrator {
           }
         }
         session.scanned = assets.length;
+        session.assets = assets;
         onProgress(ScanProgress(ScanPhase.reading, assets.length, total,
             paused: session.paused));
         if ((assets.length ~/ config.batchSize) % 10 == 0) {
@@ -143,6 +210,11 @@ class ScanOrchestrator {
 
       final n = assets.length;
       mark('xong PDQ n=$n');
+
+      // Giai đoạn 1b (iOS): hash bản gốc của ảnh đã chỉnh sửa trong ứng dụng Ảnh.
+      final orig = config.useOriginalVersion
+          ? await _originalHashes(session, assets, mark)
+          : const _OrigHashes([], null);
       onProgress(ScanProgress(ScanPhase.matching, n, n));
 
       // Giai đoạn 2: ứng viên LSH + Hamming (chỉ cần PDQ).
@@ -150,7 +222,8 @@ class ScanOrchestrator {
         flat: flat,
         has: has,
         n: n,
-        maxHamming: config.maxHamming,
+        maxHamming: config.similarMaxHamming,
+        exactBelow: config.exactPairsBelow,
       );
 
       // SHA-256 chỉ cần cho ảnh nghi trùng: hai file giống hệt nhau luôn có
@@ -158,6 +231,7 @@ class ScanOrchestrator {
       // nào thì không thể là bản sao y hệt của ảnh khác.
       final needSha = Uint8List(n);
       for (final e in edges) {
+        if (e.distance > config.maxHamming) continue;
         needSha[e.a] = 1;
         needSha[e.b] = 1;
       }
@@ -198,9 +272,8 @@ class ScanOrchestrator {
         try {
           await PhotoManager.clearFileCache();
         } catch (_) {}
-        onProgress(ScanProgress(
-            ScanPhase.exact, math.min(s0 + config.shaBatch, shaIdx.length),
-            shaIdx.length,
+        onProgress(ScanProgress(ScanPhase.exact,
+            math.min(s0 + config.shaBatch, shaIdx.length), shaIdx.length,
             paused: session.paused));
       }
       for (var i = 0; i < n; i++) {
@@ -222,63 +295,76 @@ class ScanOrchestrator {
         }
       }
 
+      final ufSim = UnionFind(n);
       for (final e in edges) {
-        uf.union(e.a, e.b);
+        if (e.distance <= config.maxHamming) uf.union(e.a, e.b);
+        ufSim.union(e.a, e.b);
       }
 
-      // Giai đoạn 3: mô hình AI cho các ảnh còn lại chưa vào nhóm nào.
+      // Liên kết "bản đã chỉnh <-> ảnh khác" qua hash BẢN GỐC; chỉ cho nhóm tương tự.
+      final links = _originalLinks(orig, flat, has, n);
+      for (final key in links.keys) {
+        ufSim.union(key ~/ n, key % n);
+      }
+      if (orig.owners.isNotEmpty) {
+        mark('bản gốc: ${links.length} liên kết ảnh đã chỉnh <-> ảnh khác');
+      }
+
+      // Liên kết theo điểm đặc trưng cục bộ (ORB + RANSAC); cũng chỉ cho tab tương tự.
+      final localLinks = config.useLocalFeatures && localMatcher != null
+          ? await _localFeatureStage(
+              session, assets, uf, flat, has, onProgress, mark)
+          : <int, int>{};
+      for (final key in localLinks.keys) {
+        ufSim.union(key ~/ n, key % n);
+      }
+
+      // Giai đoạn 3: mô hình AI xác minh các cặp PDQ nằm giữa ngưỡng trùng và
+      // ngưỡng tương tự (chỉ cho ảnh chưa vào nhóm nào).
       final emb = config.useModel
-          ? await _modelStage(session, assets, uf, onProgress, mark)
+          ? await _modelStage(session, assets, uf, edges, onProgress, mark)
           : <int, Float32List>{};
 
-      // Giai đoạn 5: dựng nhóm.
+      final simEmb = config.useSimilarModel
+          ? await _similarModelStage(
+              session, assets, uf, ufSim, onProgress, mark)
+          : <int, Float32List>{};
+
+      // Giai đoạn 5: nhóm trùng (ngưỡng maxHamming), rồi nhóm tương tự
+      // (ngưỡng similarMaxHamming) từ các ảnh chưa nằm trong nhóm trùng nào.
       final byRoot = <int, List<int>>{};
       for (var i = 0; i < n; i++) {
         (byRoot[uf.find(i)] ??= <int>[]).add(i);
       }
       final groups = <DuplicateGroup>[];
+      final inDupIds = <String>{};
       for (final members in byRoot.values) {
         if (members.length < 2) continue;
-        members.sort((a, b) {
-          final pa = assets[a].width * assets[a].height;
-          final pb = assets[b].width * assets[b].height;
-          if (pa != pb) return pb.compareTo(pa);
-          return assets[a].createDateTime.compareTo(assets[b].createDateTime);
-        });
-        final rep = members.first;
-        final items = <DuplicateItem>[];
-        final rows = <DiagRow>[];
-        for (final m in members) {
-          final exact = shas[m] != null && shas[m] == shas[rep];
-          final h = _hamming(flat, has, m, rep);
-          final c = m == rep ? null : cosineOf(emb[m], emb[rep]);
-          // Nhóm do mô hình: hai ảnh không gần nhau theo PDQ nhưng có cosine.
-          final byModel =
-              !exact && c != null && !(h != null && h <= config.maxHamming);
-          double? sim;
-          if (m == rep) {
-            sim = 100;
-          } else if (byModel) {
-            sim = c! * 100;
-          } else if (h != null) {
-            sim = pdqSimilarity(h);
-          }
-          items.add(DuplicateItem(assets[m],
-              exact: exact, similarity: sim, byModel: byModel));
-          if (session.diag != null) {
-            rows.add(_dupRow(assets[m], assets[rep],
-                isAnchor: m == rep,
-                exact: exact,
-                hamming: h,
-                cosine: c,
-                byModel: byModel));
-          }
-        }
-        final group = DuplicateGroup(items);
-        groups.add(group);
-        session.diag?.attach(group, rows);
+        final g = _buildGroup(session, assets, members, shas, flat, has, emb,
+            GroupKind.duplicate, config.maxHamming,
+            links: links, localLinks: localLinks);
+        if (g == null) continue;
+        groups.add(g);
+        inDupIds.addAll(g.items.map((e) => e.asset.id));
       }
       groups.sort((a, b) => b.items.length.compareTo(a.items.length));
+
+      final bySim = <int, List<int>>{};
+      for (var i = 0; i < n; i++) {
+        if (inDupIds.contains(assets[i].id)) continue;
+        (bySim[ufSim.find(i)] ??= <int>[]).add(i);
+      }
+      final similar = <DuplicateGroup>[];
+      for (final members in bySim.values) {
+        if (members.length < 2) continue;
+        final g = _buildGroup(session, assets, members, shas, flat, has, emb,
+            GroupKind.similar, config.similarMaxHamming,
+            simEmb: simEmb,
+            links: links, localLinks: localLinks);
+        if (g != null) similar.add(g);
+      }
+      similar.sort((a, b) => b.items.length.compareTo(a.items.length));
+      groups.addAll(similar);
       session.groups
         ..clear()
         ..addAll(groups);
@@ -293,6 +379,116 @@ class ScanOrchestrator {
     }
   }
 
+  /// Dựng một nhóm: ảnh lớn nhất/cũ nhất làm đại diện. Chỉ giữ ảnh có độ giống
+  /// trực tiếp với đại diện <= [limit] (hoặc SHA trùng). KHÔNG nối qua ảnh khác,
+  /// để tránh chuỗi gom ảnh rất khác nhau. Trả về null nếu còn dưới 2 ảnh.
+  DuplicateGroup? _buildGroup(
+    ScanSession session,
+    List<AssetEntity> assets,
+    List<int> members,
+    List<String?> shas,
+    Uint64List flat,
+    Uint8List has,
+    Map<int, Float32List> emb,
+    GroupKind kind,
+    int limit, {
+    Map<int, int> links = const {},
+    Map<int, int> localLinks = const {},
+    Map<int, Float32List> simEmb = const {},
+  }) {
+    final n = assets.length;
+    double? simCos(int m) =>
+        kind == GroupKind.similar ? cosineOf(simEmb[m], simEmb[members.first]) : null;
+    bool linked(int a, int b) => links.containsKey(_linkKey(a, b, n));
+    bool linkedLocal(int a, int b) =>
+        localLinks.containsKey(_linkKey(a, b, n));
+    members.sort((a, b) {
+      final pa = assets[a].width * assets[a].height;
+      final pb = assets[b].width * assets[b].height;
+      if (pa != pb) return pb.compareTo(pa);
+      return assets[a].createDateTime.compareTo(assets[b].createDateTime);
+    });
+    final rep = members.first;
+    final kept = [
+      for (final m in members)
+        if (m == rep ||
+            (shas[m] != null && shas[m] == shas[rep]) ||
+            (_hamming(flat, has, m, rep) ?? limit + 1) <= limit ||
+            (kind == GroupKind.duplicate &&
+                (cosineOf(emb[m], emb[rep]) ?? -1) >= config.modelMinCosine) ||
+            (kind == GroupKind.similar &&
+                (linked(m, rep) ||
+                    linkedLocal(m, rep) ||
+                    (simCos(m) ?? -1) >= config.similarModelFloor)))
+          m,
+    ];
+    if (kept.length < 2) return null;
+    final items = <DuplicateItem>[];
+    final rows = <DiagRow>[];
+    for (final m in kept) {
+      final exact = shas[m] != null && shas[m] == shas[rep];
+      final h = _hamming(flat, has, m, rep);
+      final c = m == rep ? null : cosineOf(emb[m], emb[rep]);
+      // Nhóm do mô hình: hai ảnh không gần nhau theo PDQ nhưng có cosine.
+      final byModel = !exact && c != null && !(h != null && h <= limit);
+      final viaOriginal = m != rep &&
+          !exact &&
+          !byModel &&
+          !(h != null && h <= limit) &&
+          linked(m, rep);
+      final localInl = m != rep &&
+              !exact &&
+              !byModel &&
+              !viaOriginal &&
+              !(h != null && h <= limit) &&
+              linkedLocal(m, rep)
+          ? localLinks[_linkKey(m, rep, n)]
+          : null;
+      final cs = m == rep ? null : simCos(m);
+      final modelOnly = kind == GroupKind.similar &&
+          m != rep &&
+          !exact &&
+          !byModel &&
+          !viaOriginal &&
+          localInl == null &&
+          !(h != null && h <= limit) &&
+          cs != null &&
+          cs >= config.similarModelFloor;
+      double? sim;
+      if (m == rep) {
+        sim = 100;
+      } else if (viaOriginal || localInl != null || modelOnly) {
+        sim = null; // ảnh khác ảnh đại diện (đã chỉnh): không tự xóa
+      } else if (byModel) {
+        sim = c * 100;
+      } else if (h != null) {
+        sim = pdqSimilarity(h);
+      }
+      items.add(DuplicateItem(assets[m],
+          exact: exact,
+          similarity: sim,
+          byModel: byModel,
+          viaOriginal: viaOriginal,
+          localInliers: localInl,
+          modelCosine: modelOnly ? cs : null));
+      if (session.diag != null) {
+        rows.add(_dupRow(assets[m], assets[rep],
+            isAnchor: m == rep,
+            exact: exact,
+            hamming: h,
+            cosine: c ?? cs,
+            byModel: byModel,
+            modelOnly: modelOnly,
+            limit: limit,
+            origDistance: viaOriginal ? links[_linkKey(m, rep, n)] : null,
+            localInliers: localInl));
+      }
+    }
+    final group = DuplicateGroup(items, kind: kind);
+    session.diag?.attach(group, rows);
+    return group;
+  }
+
   /// Hamming PDQ giữa hai ảnh theo chỉ số; null nếu một trong hai không có hash.
   int? _hamming(Uint64List flat, Uint8List has, int i, int j) =>
       has[i] == 1 && has[j] == 1 ? hammingFlat(flat, i, j) : null;
@@ -305,16 +501,26 @@ class ScanOrchestrator {
     required int? hamming,
     double? cosine,
     bool byModel = false,
+    bool modelOnly = false,
+    required int limit,
+    int? origDistance,
+    int? localInliers,
   }) {
     final String reason;
     if (isAnchor) {
       reason = 'anchor';
     } else if (exact) {
       reason = 'sha256';
+    } else if (localInliers != null) {
+      reason = 'điểm đặc trưng (inlier=$localInliers)';
+    } else if (origDistance != null) {
+      reason = 'bản gốc đã chỉnh (Hamming gốc=$origDistance)';
+    } else if (modelOnly) {
+      reason = 'ai-tương-tự cosine>=${config.similarModelFloor}';
     } else if (byModel) {
       reason = 'dino-cosine>=${config.modelMinCosine}';
-    } else if (hamming != null && hamming <= config.maxHamming) {
-      reason = 'hamming<=max';
+    } else if (hamming != null && hamming <= limit) {
+      reason = 'hamming<=$limit';
     } else {
       reason = 'bắc cầu (union-find)';
     }
@@ -324,37 +530,211 @@ class ScanOrchestrator {
       hamming: hamming,
       pdqPercent: hamming == null ? null : pdqSimilarity(hamming),
       cosDino: cosine,
-      threshold: byModel
-          ? 'cos>=${config.modelMinCosine}'
-          : 'max<=${config.maxHamming}',
+      threshold: byModel ? 'cos>=${config.modelMinCosine}' : 'max<=$limit',
       reason: reason,
     );
   }
 
-  /// Bước AI: embedding DINOv2 cho ảnh chưa vào nhóm, rồi nối các cặp có
-  /// cosine >= [ScanConfig.modelMinCosine] vào [uf]. Mọi lỗi đều được ghi vào
-  /// timings, không nuốt âm thầm. Trả về embedding theo chỉ số ảnh.
-  Future<Map<int, Float32List>> _modelStage(
+  /// Khóa không phân biệt thứ tự cho cặp ảnh (a, b) trong thư viện n ảnh.
+  static int _linkKey(int a, int b, int n) => a < b ? a * n + b : b * n + a;
+
+  /// iOS: hash thumbnail BẢN GỐC của các ảnh đã chỉnh sửa trong ứng dụng Ảnh.
+  /// Mọi lỗi (kênh nền tảng thiếu, ảnh trên iCloud...) chỉ ghi vào timings.
+  Future<_OrigHashes> _originalHashes(
+    ScanSession session,
+    List<AssetEntity> assets,
+    void Function(String) mark,
+  ) async {
+    final edits = PhotoEdits();
+    if (!edits.supported) return const _OrigHashes([], null);
+    try {
+      final idToIdx = {for (var i = 0; i < assets.length; i++) assets[i].id: i};
+      final allIds = idToIdx.keys.toList();
+      final edited = <int>[];
+      for (var s = 0; s < allIds.length; s += 500) {
+        if (session.cancelled) throw const ScanCancelled();
+        final part = allIds.sublist(s, math.min(s + 500, allIds.length));
+        for (final id in await edits.editedIds(part)) {
+          final i = idToIdx[id];
+          if (i != null) edited.add(i);
+        }
+      }
+      edited.sort();
+      final owners = <int>[];
+      final words = <int>[];
+      var missing = 0;
+      for (var s = 0; s < edited.length; s += 32) {
+        if (session.cancelled) throw const ScanCancelled();
+        await session.waitIfPaused();
+        final part = edited.sublist(s, math.min(s + 32, edited.length));
+        final thumbs =
+            await edits.originalThumbs([for (final i in part) assets[i].id]);
+        final inputs = <HashInput>[];
+        final idxs = <int>[];
+        for (final i in part) {
+          final t = thumbs[assets[i].id];
+          if (t == null) {
+            missing++;
+            continue;
+          }
+          inputs.add(HashInput(index: idxs.length, thumb: t));
+          idxs.add(i);
+        }
+        if (inputs.isEmpty) continue;
+        for (final o in await hashBatch(inputs)) {
+          final p = o.pdq;
+          if (p == null) {
+            missing++;
+            continue;
+          }
+          owners.add(idxs[o.index]);
+          words.addAll(p);
+        }
+      }
+      mark('bản gốc: ${edited.length} ảnh đã chỉnh, ${owners.length} có hash gốc'
+          '${missing > 0 ? ', $missing không lấy được (iCloud/lỗi)' : ''}');
+      return _OrigHashes(owners, Uint64List.fromList(words));
+    } on ScanCancelled {
+      rethrow;
+    } catch (e) {
+      mark('bản gốc: BỎ QUA ($e)');
+      return const _OrigHashes([], null);
+    }
+  }
+
+  /// Cặp (ảnh đã chỉnh o, ảnh khác j): hash BẢN GỐC của o có Hamming <= maxHamming
+  /// với hash hiện tại của j, và hash hiện tại của o thì không (cặp đó đã được
+  /// tìm thấy ở bước PDQ thường). Giá trị là khoảng cách Hamming của hash gốc.
+  Map<int, int> _originalLinks(
+      _OrigHashes orig, Uint64List flat, Uint8List has, int n) {
+    final out = <int, int>{};
+    final of = orig.flat;
+    if (of == null) return out;
+    for (var k = 0; k < orig.owners.length; k++) {
+      final o = orig.owners[k];
+      for (var j = 0; j < n; j++) {
+        if (j == o || has[j] == 0) continue;
+        var d = 0;
+        for (var w = 0; w < 4; w++) {
+          d += popcount64(of[k * 4 + w] ^ flat[j * 4 + w]);
+        }
+        if (d > config.maxHamming) continue;
+        if (has[o] == 1 && hammingFlat(flat, o, j) <= config.maxHamming) {
+          continue;
+        }
+        final key = _linkKey(o, j, n);
+        final prev = out[key];
+        if (prev == null || d < prev) out[key] = d;
+      }
+    }
+    return out;
+  }
+
+  /// So khớp điểm đặc trưng cục bộ cho các cặp chụp gần nhau về thời gian mà PDQ
+  /// chưa nối (Hamming > similarMaxHamming) và chưa cùng nhóm Trùng. Trả về
+  /// khóa cặp -> số inlier, chỉ gồm cặp >= localMinInliers. Lỗi chỉ ghi vào timings.
+  Future<Map<int, int>> _localFeatureStage(
     ScanSession session,
     List<AssetEntity> assets,
     UnionFind uf,
+    Uint64List flat,
+    Uint8List has,
     void Function(ScanProgress) onProgress,
     void Function(String) mark,
   ) async {
+    final matcher = localMatcher!;
     final n = assets.length;
-    final groupSize = List<int>.filled(n, 0);
-    for (var i = 0; i < n; i++) {
-      groupSize[uf.find(i)]++;
+    final batches = planLocalBatches(
+      times: [for (final a in assets) a.createDateTime],
+      neighbors: config.localNeighbors,
+      window: Duration(minutes: config.localWindowMinutes),
+      skip: (a, b) =>
+          uf.find(a) == uf.find(b) ||
+          (has[a] == 1 &&
+              has[b] == 1 &&
+              hammingFlat(flat, a, b) <= config.similarMaxHamming),
+    );
+    var total = 0;
+    for (final b in batches) {
+      total += b.pairs.length;
     }
-    final todo = [
-      for (var i = 0; i < n; i++)
-        if (groupSize[uf.find(i)] == 1) i
-    ];
-    if (todo.length < 2) {
-      mark('AI: bỏ qua, còn ${todo.length} ảnh chưa nhóm');
+    if (total == 0) {
+      mark('điểm đặc trưng: không có cặp ứng viên');
       return {};
     }
+    final out = <int, int>{};
+    var done = 0;
+    var checked = 0;
+    var failed = 0;
+    String? lastErr;
+    for (final b in batches) {
+      if (session.cancelled) throw const ScanCancelled();
+      await session.waitIfPaused();
+      if (session.cancelled) throw const ScanCancelled();
+      if (checked >= config.localMaxPairs) {
+        mark('điểm đặc trưng: DỪNG ở giới hạn ${config.localMaxPairs} cặp '
+            '(còn ${total - done} cặp chưa so)');
+        break;
+      }
+      try {
+        final thumbs = await _thumbBytes(
+            [for (final i in b.photos) assets[i]], config.localThumbSide);
+        final newIdx = List<int>.filled(thumbs.length, -1);
+        final photos = <Uint8List>[];
+        for (var k = 0; k < thumbs.length; k++) {
+          final t = thumbs[k];
+          if (t != null) {
+            newIdx[k] = photos.length;
+            photos.add(t);
+          }
+        }
+        final pairs = <LocalPair>[];
+        final origPairs = <LocalPair>[];
+        for (final p in b.pairs) {
+          final x = newIdx[p.a];
+          final y = newIdx[p.b];
+          if (x < 0 || y < 0) continue;
+          pairs.add(LocalPair(x, y));
+          origPairs.add(p);
+        }
+        if (pairs.isNotEmpty) {
+          final inl = await matcher.matchPairs(photos, pairs);
+          for (var k = 0; k < pairs.length && k < inl.length; k++) {
+            checked++;
+            if (inl[k] < config.localMinInliers) continue;
+            final key =
+                _linkKey(b.photos[origPairs[k].a], b.photos[origPairs[k].b], n);
+            final prev = out[key];
+            if (prev == null || inl[k] > prev) out[key] = inl[k];
+          }
+        }
+      } catch (e) {
+        failed++;
+        lastErr = '$e';
+        if (failed >= 3) {
+          mark('điểm đặc trưng: DỪNG sau 3 lô lỗi ($lastErr)');
+          break;
+        }
+      }
+      done += b.pairs.length;
+      onProgress(ScanProgress(ScanPhase.features, done, total,
+          paused: session.paused));
+    }
+    mark('điểm đặc trưng: so $checked/$total cặp, ${out.length} cặp >= '
+        '${config.localMinInliers} điểm'
+        '${failed > 0 ? ', $failed lô lỗi ($lastErr)' : ''}');
+    return out;
+  }
 
+  /// Embedding (chưa trừ trung bình) cho các ảnh có chỉ số trong [todo]. Lỗi được
+  /// ghi vào timings; trả về map rỗng/thiếu thay vì ném lỗi.
+  Future<Map<int, Float32List>> _embedIndices(
+    ScanSession session,
+    List<AssetEntity> assets,
+    List<int> todo,
+    void Function(ScanProgress) onProgress,
+    void Function(String) mark,
+  ) async {
     final embedder = DinoEmbedder();
     try {
       await embedder.load();
@@ -363,7 +743,7 @@ class ScanOrchestrator {
       return {};
     }
 
-    final out = <int, Float32List>{};
+    final raw = <int, Float32List>{};
     try {
       var thumbFail = 0;
       var batchFail = 0;
@@ -415,7 +795,7 @@ class ScanOrchestrator {
             try {
               final e = await embedder.embed(inputs);
               for (var k = 0; k < ok.length; k++) {
-                out[ok[k]] = e[k];
+                raw[ok[k]] = e[k];
               }
               consecutiveFail = 0;
             } catch (e) {
@@ -434,36 +814,139 @@ class ScanOrchestrator {
           break;
         }
       }
-      mark('AI: ${out.length}/${todo.length} ảnh có embedding'
+      mark('AI: ${raw.length}/${todo.length} ảnh có embedding'
           '${thumbFail > 0 ? ', $thumbFail ảnh không đọc được thumbnail' : ''}'
           '${batchFail > 0 ? ', $batchFail ảnh lỗi ($lastErr)' : ''}');
-
-      if (out.length >= 2) {
-        final ids = out.keys.toList()..sort();
-        final cnt = ids.length;
-        final flatEmb = Float32List(cnt * dinoDim);
-        for (var k = 0; k < cnt; k++) {
-          flatEmb.setRange(k * dinoDim, (k + 1) * dinoDim, out[ids[k]]!);
-        }
-        onProgress(ScanProgress(ScanPhase.matching, cnt, cnt));
-        final minCos = config.modelMinCosine;
-        final exactBelow = config.modelExactBelow;
-        final edges = await Isolate.run(() => findDinoEdges(
-              emb: flatEmb,
-              n: cnt,
-              dim: dinoDim,
-              minCos: minCos,
-              exactBelow: exactBelow,
-            ));
-        for (final e in edges) {
-          uf.union(ids[e.a], ids[e.b]);
-        }
-        mark('AI: ${edges.length} cặp cosine>=$minCos trên $cnt ảnh'
-            '${cnt > exactBelow ? ' (LSH, recall xấp xỉ)' : ''}');
-      }
     } finally {
       await embedder.close();
     }
+
+    return raw;
+  }
+
+  /// Bước AI cho tab "Tương tự": embedding mọi ảnh chưa vào nhóm trùng, trừ trung
+  /// bình toàn thư viện, rồi nối mỗi ảnh với [ScanConfig.similarModelK] hàng xóm gần
+  /// nhất (cosine >= [ScanConfig.similarModelFloor]) vào [ufSim]. Ngưỡng cuối do
+  /// người dùng chỉnh lúc xem (thanh "Độ nhạy"), nên không cần bộ dữ liệu cố định.
+  /// Trả về embedding đã trừ trung bình; rỗng nếu bỏ qua.
+  Future<Map<int, Float32List>> _similarModelStage(
+    ScanSession session,
+    List<AssetEntity> assets,
+    UnionFind uf,
+    UnionFind ufSim,
+    void Function(ScanProgress) onProgress,
+    void Function(String) mark,
+  ) async {
+    final n = assets.length;
+    final groupSize = List<int>.filled(n, 0);
+    for (var i = 0; i < n; i++) {
+      groupSize[uf.find(i)]++;
+    }
+    final todo = [for (var i = 0; i < n; i++) i];
+    if (todo.length < config.modelMinMeanCount) {
+      mark('AI tương tự: BỎ QUA, chỉ ${todo.length} ảnh cần so');
+      return {};
+    }
+    final raw = await _embedIndices(session, assets, todo, onProgress, mark);
+    if (raw.length < config.modelMinMeanCount) {
+      mark('AI tương tự: BỎ QUA, chỉ ${raw.length} embedding hợp lệ');
+      return {};
+    }
+    final out = centerEmbeddings(raw);
+    onProgress(const ScanProgress(ScanPhase.matching, 0, 1));
+    final ids = out.keys.toList()..sort();
+    final dim = out[ids.first]!.length;
+    final flat = Float32List(ids.length * dim);
+    for (var r = 0; r < ids.length; r++) {
+      flat.setRange(r * dim, (r + 1) * dim, out[ids[r]]!);
+    }
+    final k = config.similarModelK;
+    final floor = config.similarModelFloor;
+    final edges = await Isolate.run(
+        () => findTopKEdges(emb: flat, n: ids.length, dim: dim, k: k, minCos: floor));
+    for (final e in edges) {
+      final a = ids[e.a], b = ids[e.b];
+      // Chỉ nối ảnh chưa vào nhóm trùng, tránh bắc cầu qua nhóm trùng.
+      if (groupSize[uf.find(a)] == 1 && groupSize[uf.find(b)] == 1) {
+        ufSim.union(a, b);
+      }
+    }
+    session.embeddings
+      ..clear()
+      ..addAll({for (final i in ids) assets[i].id: out[i]!});
+    mark('AI tương tự: ${ids.length} ảnh, ${edges.length} cạnh top-$k '
+        'cosine>=$floor');
+    return out;
+  }
+
+  /// Bước AI: xác minh các cặp ứng viên PDQ có Hamming nằm giữa [ScanConfig.maxHamming]
+  /// và [ScanConfig.similarMaxHamming] (hash lệch một chút, ví dụ ảnh cháy sáng).
+  /// Chỉ ảnh thuộc các cặp đó (và chưa vào nhóm nào) được embedding, cộng một mẫu
+  /// nhỏ rải đều thư viện để tính vector trung bình. Embedding được trừ trung bình
+  /// rồi L2-normalize lại (đặc trưng MobileNet đều dương nên cosine thô giữa ảnh
+  /// bất kỳ đã cao). Cặp có cosine >= [ScanConfig.modelMinCosine] được nối vào [uf].
+  /// Mọi lỗi đều được ghi vào timings. Trả về embedding (đã trừ trung bình) theo
+  /// chỉ số ảnh; rỗng nếu không có cặp nào cần xác minh hoặc không đủ mẫu.
+  Future<Map<int, Float32List>> _modelStage(
+    ScanSession session,
+    List<AssetEntity> assets,
+    UnionFind uf,
+    List<MatchEdge> edges,
+    void Function(ScanProgress) onProgress,
+    void Function(String) mark,
+  ) async {
+    final n = assets.length;
+    final groupSize = List<int>.filled(n, 0);
+    for (var i = 0; i < n; i++) {
+      groupSize[uf.find(i)]++;
+    }
+    final pairs = <MatchEdge>[
+      for (final e in edges)
+        if (e.distance > config.maxHamming &&
+            groupSize[uf.find(e.a)] == 1 &&
+            groupSize[uf.find(e.b)] == 1)
+          e,
+    ];
+    if (pairs.isEmpty) {
+      mark('AI: bỏ qua, không có cặp PDQ nào cần xác minh');
+      return {};
+    }
+
+    // Ảnh cần embedding = ảnh trong các cặp + mẫu rải đều để lấy trung bình.
+    final need = <int>{
+      for (final e in pairs) ...[e.a, e.b],
+    };
+    final sampleStep = math.max(1, n ~/ config.modelMeanSample);
+    for (var i = 0; i < n; i += sampleStep) {
+      need.add(i);
+    }
+    final todo = need.toList()..sort();
+    if (todo.length < config.modelMinMeanCount) {
+      mark('AI: BỎ QUA, chỉ ${todo.length} ảnh (< ${config.modelMinMeanCount}) '
+          'nên không đủ mẫu để trừ trung bình');
+      return {};
+    }
+
+    final raw = await _embedIndices(session, assets, todo, onProgress, mark);
+    if (raw.length < config.modelMinMeanCount) {
+      mark('AI: BỎ QUA xác minh, chỉ ${raw.length} embedding hợp lệ');
+      return {};
+    }
+    final out = centerEmbeddings(raw);
+    onProgress(ScanProgress(ScanPhase.matching, pairs.length, pairs.length));
+    var checked = 0;
+    var merged = 0;
+    for (final e in pairs) {
+      final c = cosineOf(out[e.a], out[e.b]);
+      if (c == null) continue;
+      checked++;
+      if (c >= config.modelMinCosine) {
+        uf.union(e.a, e.b);
+        merged++;
+      }
+    }
+    mark('AI: $merged/$checked cặp PDQ (${config.maxHamming}<Hamming<='
+        '${config.similarMaxHamming}) có cosine>=${config.modelMinCosine}');
     return out;
   }
 
@@ -510,7 +993,8 @@ class ScanOrchestrator {
   }
 
   /// Export file gốc cho các ảnh nghi trùng; chỉ số là chỉ số trong [idx].
-  Future<List<HashInput>> _files(List<int> idx, List<AssetEntity> assets) async {
+  Future<List<HashInput>> _files(
+      List<int> idx, List<AssetEntity> assets) async {
     final inputs = <HashInput>[];
     final c = config.fileConcurrency;
     for (var i = 0; i < idx.length; i += c) {
@@ -528,6 +1012,16 @@ class ScanOrchestrator {
     }
     return inputs;
   }
+}
+
+class _OrigHashes {
+  const _OrigHashes(this.owners, this.flat);
+
+  /// owners[k] = chỉ số ảnh (đã chỉnh) mà hash gốc thứ k thuộc về.
+  final List<int> owners;
+
+  /// 4 word 64-bit cho mỗi hash gốc; null nếu không có.
+  final Uint64List? flat;
 }
 
 class _EmbBatch {

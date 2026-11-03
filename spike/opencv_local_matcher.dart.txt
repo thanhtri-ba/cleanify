@@ -1,0 +1,106 @@
+// ===========================================================================
+// BẢN THỬ (chưa biên dịch, chưa kiểm chứng API): so khớp điểm đặc trưng bằng OpenCV.
+// File này cố ý để ngoài lib/ và đuôi .txt để `flutter analyze`/build hiện tại không
+// bị ảnh hưởng khi chưa thêm opencv_dart. Các tên hàm bên dưới viết theo trí nhớ
+// về opencv_dart 1.x (ràng buộc kiểu gocv); nếu trình biên dịch báo sai tên hoặc
+// kiểu thì chỉ cần sửa trong MỘT file này.
+//
+// CÁCH BẬT
+// 1) pubspec.yaml, thêm dependency (Dart >= 3.10, dự án đang là 3.13):
+//      opencv_dart: ^1.4.1
+//    và bật hai module mặc định đang tắt (cú pháp theo tài liệu gói; nếu pub báo
+//    sai khóa cấu hình thì đối chiếu README của opencv_dart / dartcv4):
+//      hooks:
+//        user_defines:
+//          dartcv4:
+//            include_modules:
+//              - features2d
+//              - calib3d
+// 2) Chép file này thành lib/engines/features/opencv_local_matcher.dart
+//    (đổi đuôi thành .dart), rồi chạy `flutter pub get`.
+// 3) lib/main.dart: thay
+//      ScanController(orchestrator: ScanOrchestrator())
+//    bằng
+//      ScanController(
+//        orchestrator: ScanOrchestrator(
+//          config: const ScanConfig(useLocalFeatures: true),
+//          localMatcher: OpenCvLocalMatcher(),
+//        ),
+//      )
+//    và import 'engines/features/opencv_local_matcher.dart'.
+// 4) Chạy `flutter build ipa --analyze-size` trước và sau để biết app tăng bao nhiêu.
+// ===========================================================================
+import 'dart:isolate';
+import 'dart:typed_data';
+
+import 'package:opencv_dart/opencv_dart.dart' as cv;
+
+import 'local_matcher.dart';
+
+class OpenCvLocalMatcher implements LocalFeatureMatcher {
+  OpenCvLocalMatcher({this.features = 500, this.ratio = 0.75, this.ransacPx = 4.0});
+
+  /// Số điểm ORB tối đa mỗi ảnh (500 giữ bộ nhớ thấp; thử đo dùng 1000).
+  final int features;
+
+  /// Ngưỡng Lowe ratio cho knnMatch k=2.
+  final double ratio;
+
+  /// Sai số tái chiếu RANSAC (px, trên ảnh đã thu nhỏ).
+  final double ransacPx;
+
+  @override
+  Future<List<int>> matchPairs(
+      List<Uint8List> photos, List<LocalPair> pairs) {
+    final f = features, r = ratio, t = ransacPx;
+    final pa = [for (final p in pairs) p.a], pb = [for (final p in pairs) p.b];
+    // Gọi OpenCV trong isolate riêng để không chặn UI.
+    return Isolate.run(() => _run(photos, pa, pb, f, r, t));
+  }
+}
+
+List<int> _run(List<Uint8List> photos, List<int> pa, List<int> pb, int features,
+    double ratio, double ransacPx) {
+  final orb = cv.ORB.create(nFeatures: features);
+  final bf = cv.BFMatcher.create(type: cv.NORM_HAMMING);
+  final kps = <int, cv.VecKeyPoint>{};
+  final desc = <int, cv.Mat>{};
+  final used = <int>{...pa, ...pb};
+  for (final i in used) {
+    final img = cv.imdecode(photos[i], cv.IMREAD_GRAYSCALE);
+    final (k, d) = orb.detectAndCompute(img, cv.Mat.empty());
+    kps[i] = k;
+    desc[i] = d;
+    img.dispose();
+  }
+  final out = <int>[];
+  for (var n = 0; n < pa.length; n++) {
+    final a = pa[n], b = pb[n];
+    final da = desc[a]!, db = desc[b]!;
+    if (da.rows < 8 || db.rows < 8) {
+      out.add(0);
+      continue;
+    }
+    final knn = bf.knnMatch(da, db, 2);
+    final from = <cv.Point2f>[], to = <cv.Point2f>[];
+    for (final m in knn) {
+      if (m.length == 2 && m[0].distance < ratio * m[1].distance) {
+        final ka = kps[a]![m[0].queryIdx], kb = kps[b]![m[0].trainIdx];
+        from.add(cv.Point2f(ka.x, ka.y));
+        to.add(cv.Point2f(kb.x, kb.y));
+      }
+    }
+    if (from.length < 8) {
+      out.add(0);
+      continue;
+    }
+    final (_, inliers) = cv.estimateAffinePartial2D(
+      cv.VecPoint2f.fromList(from),
+      cv.VecPoint2f.fromList(to),
+      method: cv.RANSAC,
+      ransacReprojThreshold: ransacPx,
+    );
+    out.add(inliers.isEmpty ? 0 : cv.countNonZero(inliers));
+  }
+  return out;
+}

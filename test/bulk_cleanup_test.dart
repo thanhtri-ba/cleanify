@@ -102,4 +102,26 @@ void main() {
       expect(plan.assetsFor(GroupKind.values.toSet()), isEmpty);
     });
   });
+
+  group('withMinModelCosine', () {
+    DuplicateItem m(String id, double c) =>
+        DuplicateItem(_a(id), exact: false, modelCosine: c);
+    final g = DuplicateGroup(
+        [_i('a', sim: 100), m('b', 0.5), m('c', 0.7)],
+        kind: GroupKind.similar);
+
+    test('ngưỡng thấp giữ nguyên nhóm', () {
+      expect(identical(g.withMinModelCosine(0.4), g), isTrue);
+    });
+    test('ngưỡng cao bỏ ảnh yếu', () {
+      expect(g.withMinModelCosine(0.6)!.items.map((e) => e.asset.id), ['a', 'c']);
+    });
+    test('còn dưới 2 ảnh thì bỏ nhóm', () {
+      expect(g.withMinModelCosine(0.9), isNull);
+    });
+    test('ảnh chỉ nhờ AI không bao giờ bị Dọn nhanh xóa', () {
+      final plan = planBulkCleanup([g], minSimilarity: 80);
+      expect(plan.deletes[GroupKind.similar] ?? const [], isEmpty);
+    });
+  });
 }

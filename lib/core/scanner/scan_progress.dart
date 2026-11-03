@@ -1,4 +1,4 @@
-enum ScanPhase { reading, matching, exact, embedding }
+enum ScanPhase { reading, matching, exact, embedding, features }
 
 class ScanProgress {
   const ScanProgress(this.phase, this.done, this.total, {this.paused = false});
@@ -19,6 +19,8 @@ class ScanProgress {
         return 'Đang đối chiếu file gốc $done/$total';
       case ScanPhase.embedding:
         return 'Đang phân tích AI $done/$total';
+      case ScanPhase.features:
+        return 'Đang so khớp điểm đặc trưng $done/$total';
     }
   }
 }

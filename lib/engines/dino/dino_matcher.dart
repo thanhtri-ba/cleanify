@@ -39,6 +39,43 @@ double? cosineOf(Float32List? a, Float32List? b) {
   return s;
 }
 
+/// Trừ vector trung bình của [emb] khỏi từng embedding rồi L2-normalize lại.
+/// Đặc trưng sau pooling (vd. MobileNet) đều dương nên cosine giữa hai ảnh bất
+/// kỳ đã cao; trừ trung bình của một mẫu đủ rộng loại bỏ thành phần chung đó.
+/// Cần mẫu đủ lớn: với 2 vector, trung bình nằm giữa chúng và cosine thành -1.
+Map<int, Float32List> centerEmbeddings(Map<int, Float32List> emb) {
+  if (emb.isEmpty) return {};
+  final dim = emb.values.first.length;
+  final mean = Float64List(dim);
+  for (final v in emb.values) {
+    for (var k = 0; k < dim; k++) {
+      mean[k] += v[k];
+    }
+  }
+  final inv = 1.0 / emb.length;
+  for (var k = 0; k < dim; k++) {
+    mean[k] *= inv;
+  }
+  final out = <int, Float32List>{};
+  emb.forEach((i, v) {
+    final c = Float32List(dim);
+    var s = 0.0;
+    for (var k = 0; k < dim; k++) {
+      final x = v[k] - mean[k];
+      c[k] = x;
+      s += x * x;
+    }
+    final norm = math.sqrt(s);
+    if (norm > 0) {
+      for (var k = 0; k < dim; k++) {
+        c[k] = c[k] / norm;
+      }
+    }
+    out[i] = c;
+  });
+  return out;
+}
+
 /// Tìm mọi cặp có cosine >= [minCos] trong [n] embedding (mảng phẳng [n*dim],
 /// đã L2-normalize).
 ///
@@ -104,4 +141,78 @@ List<CosEdge> findDinoEdges({
     if (c >= minCos) edges.add(CosEdge(e.a, e.b, c));
   }
   return edges;
+}
+
+/// Với mỗi ảnh, lấy [k] hàng xóm có cosine cao nhất và >= [minCos]; trả về cạnh
+/// (a < b) xuất hiện ở top-k của ít nhất một đầu. Giới hạn bậc nên không bùng nổ số
+/// cạnh trên thư viện lớn (khác ngưỡng toàn cục). Exact O(n^2*dim) khi n <=
+/// [exactBelow]; lớn hơn thì lấy ứng viên bằng [findDinoEdges] ở ngưỡng cao hơn
+/// (>= 0.5) rồi cắt top-k (recall thấp hơn nhưng chạy được).
+List<CosEdge> findTopKEdges({
+  required Float32List emb,
+  required int n,
+  required int dim,
+  required int k,
+  required double minCos,
+  int exactBelow = 6000,
+  bool mutual = true,
+}) {
+  if (n < 2 || k < 1) return [];
+  final bestCos = List<Float64List>.generate(n, (_) {
+    final f = Float64List(k);
+    f.fillRange(0, k, -2.0);
+    return f;
+  });
+  final bestIdx = List<Int32List>.generate(n, (_) => Int32List(k)..fillRange(0, k, -1));
+
+  void push(int i, int j, double c) {
+    final cs = bestCos[i];
+    if (c <= cs[k - 1]) return;
+    final ix = bestIdx[i];
+    var p = k - 1;
+    while (p > 0 && cs[p - 1] < c) {
+      cs[p] = cs[p - 1];
+      ix[p] = ix[p - 1];
+      p--;
+    }
+    cs[p] = c;
+    ix[p] = j;
+  }
+
+  if (n <= exactBelow) {
+    for (var i = 0; i < n; i++) {
+      for (var j = i + 1; j < n; j++) {
+        final c = dotRows(emb, i, j, dim);
+        push(i, j, c);
+        push(j, i, c);
+      }
+    }
+  } else {
+    final cand = findDinoEdges(
+        emb: emb, n: n, dim: dim, minCos: math.max(minCos, 0.5), exactBelow: 0);
+    for (final e in cand) {
+      push(e.a, e.b, e.cos);
+      push(e.b, e.a, e.cos);
+    }
+  }
+
+  // Đếm số đầu có cạnh trong top-k của mình; mutual => cần cả hai đầu (tránh chuỗi
+  // A~B~C~D gom cả cụm ảnh cùng "loại cảnh" nhưng khác nhau).
+  final votes = <int, int>{};
+  final cosOf = <int, double>{};
+  for (var i = 0; i < n; i++) {
+    for (var p = 0; p < k; p++) {
+      final j = bestIdx[i][p];
+      final c = bestCos[i][p];
+      if (j < 0 || c < minCos) continue;
+      final int key = i < j ? i * n + j : j * n + i;
+      votes[key] = (votes[key] ?? 0) + 1;
+      cosOf[key] = c;
+    }
+  }
+  final need = mutual ? 2 : 1;
+  return [
+    for (final e in votes.entries)
+      if (e.value >= need) CosEdge(e.key ~/ n, e.key % n, cosOf[e.key]!),
+  ];
 }

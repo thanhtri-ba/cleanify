@@ -7,11 +7,24 @@ import '../../core/scanner/scan_session.dart';
 import '../scan/home_page.dart' show TimingsCard;
 import '../scan/scan_controller.dart';
 import 'bulk_cleanup_dialog.dart';
+import 'browse_page.dart';
 import 'group_page.dart';
 
-class ResultsPage extends StatelessWidget {
+class ResultsPage extends StatefulWidget {
   const ResultsPage({super.key, required this.controller});
   final ScanController controller;
+
+  @override
+  State<ResultsPage> createState() => _ResultsPageState();
+}
+
+class _ResultsPageState extends State<ResultsPage> {
+  ScanController get controller => widget.controller;
+
+  /// Độ nhạy tab Tương tự: cosine tối thiểu của ảnh chỉ được nhóm nhờ AI.
+  /// Thấp = nhiều ảnh hơn nhưng dễ lẫn ảnh khác cảnh. Người dùng tự chỉnh bằng mắt.
+  static const _sensMin = 0.55, _sensMax = 0.90;
+  double _sens = 0.70;
 
   /// Mở dialog Dọn nhanh; chỉ xóa khi người dùng bấm Xóa trong dialog.
   Future<void> _bulkClean(
@@ -32,12 +45,35 @@ class ResultsPage extends StatelessWidget {
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) {
-        final dupes = controller.session?.groups ?? const <DuplicateGroup>[];
+        final dupes =
+            controller.session?.duplicateGroups ?? const <DuplicateGroup>[];
+        final similarAll =
+            controller.session?.similarGroups ?? const <DuplicateGroup>[];
+        final hasModelItems =
+            similarAll.any((g) => g.items.any((e) => e.modelCosine != null));
+        final similar = similarAll
+            .map((g) => g.withMinModelCosine(_sens))
+            .whereType<DuplicateGroup>()
+            .toList();
         final diag = controller.diag;
-        return Scaffold(
+        return DefaultTabController(
+          length: 2,
+          child: Scaffold(
             appBar: AppBar(
               title: const Text('Kết quả quét'),
+              bottom: const TabBar(
+                tabs: [Tab(text: 'Trùng'), Tab(text: 'Tương tự')],
+              ),
               actions: [
+                if (controller.session?.assets.isNotEmpty ?? false)
+                  IconButton(
+                    tooltip: 'Xem ảnh',
+                    icon: const Icon(Icons.grid_view_outlined),
+                    onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                            builder: (_) =>
+                                BrowsePage(controller: controller))),
+                  ),
                 if (controller.session?.timings.isNotEmpty ?? false)
                   IconButton(
                     tooltip: 'Thời gian xử lý',
@@ -48,8 +84,8 @@ class ResultsPage extends StatelessWidget {
                       builder: (_) => SafeArea(
                         child: SingleChildScrollView(
                           padding: const EdgeInsets.all(12),
-                          child: TimingsCard(
-                              timings: controller.session!.timings),
+                          child:
+                              TimingsCard(timings: controller.session!.timings),
                         ),
                       ),
                     ),
@@ -58,30 +94,63 @@ class ResultsPage extends StatelessWidget {
                   IconButton(
                     tooltip: 'Dọn nhanh',
                     icon: const Icon(Icons.cleaning_services_outlined),
-                    onPressed: () =>
-                        _bulkClean(context, dupes),
+                    onPressed: () => _bulkClean(context, dupes),
                   ),
                 if (diag != null)
                   IconButton(
-                    tooltip: 'Xuất CSV chẩn đoán',
-                    icon: const Icon(Icons.file_download_outlined),
+                    tooltip: 'Chép CSV chẩn đoán',
+                    icon: const Icon(Icons.copy_all_outlined),
                     onPressed: () async {
                       final messenger = ScaffoldMessenger.of(context);
-                      final file = await controller.exportDiagCsv();
+                      final rows = await controller.copyDiagCsv();
                       messenger.showSnackBar(SnackBar(
-                          content: Text(file == null
+                          content: Text(rows == null
                               ? 'Không có dữ liệu chẩn đoán'
-                              : 'Đã ghi ${file.path}')));
+                              : 'Đã chép $rows dòng CSV, hãy dán vào chat')));
                     },
                   ),
               ],
             ),
-            body: _GroupList(
-              controller: controller,
-              groups: dupes,
-              diag: diag,
-              empty: 'Không còn nhóm ảnh trùng nào.',
+            body: TabBarView(
+              children: [
+                _GroupList(
+                  controller: controller,
+                  groups: dupes,
+                  diag: diag,
+                  empty: 'Không còn nhóm ảnh trùng nào.',
+                ),
+                Column(children: [
+                  if (hasModelItems)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                      child: Row(children: [
+                        const Text('Độ nhạy'),
+                        Expanded(
+                          child: Slider(
+                            // Phải = chặt hơn (ít nhóm, chính xác hơn).
+                            value: _sens,
+                            min: _sensMin,
+                            max: _sensMax,
+                            divisions: 35,
+                            label: _sens.toStringAsFixed(2),
+                            onChanged: (v) => setState(() => _sens = v),
+                          ),
+                        ),
+                        Text('${similar.length} nhóm'),
+                      ]),
+                    ),
+                  Expanded(
+                    child: _GroupList(
+                      controller: controller,
+                      groups: similar,
+                      diag: diag,
+                      empty: 'Không có nhóm ảnh tương tự nào.',
+                    ),
+                  ),
+                ]),
+              ],
             ),
+          ),
         );
       },
     );
@@ -120,8 +189,8 @@ class _GroupList extends StatelessWidget {
   Widget _list(BuildContext context) {
     if (groups.isEmpty) {
       return Center(
-          child: Padding(
-              padding: const EdgeInsets.all(24), child: Text(empty)));
+          child:
+              Padding(padding: const EdgeInsets.all(24), child: Text(empty)));
     }
     return ListView.separated(
       itemCount: groups.length,
@@ -142,7 +211,8 @@ class _GroupList extends StatelessWidget {
 }
 
 class _GroupTile extends StatelessWidget {
-  const _GroupTile({required this.index, required this.group, required this.onTap});
+  const _GroupTile(
+      {required this.index, required this.group, required this.onTap});
   final int index;
   final DuplicateGroup group;
   final VoidCallback onTap;

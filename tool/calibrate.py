@@ -76,7 +76,7 @@ def calib_dup(rows, a):
         grid = np.unique(np.quantile(c[okc], np.linspace(0, 1, 101)))
         best = None
         for v in grid:
-            for H in range(cert + 1, 65):
+            for H in range(cert + 1, 71):  # 70 = similarMaxHamming của app
                 pred = (h <= cert) | ((h <= H) & (c >= v))
                 pred &= ok
                 n, tp = int(pred.sum()), int(y[pred].sum())

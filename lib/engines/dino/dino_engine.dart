@@ -5,12 +5,15 @@ import 'dart:typed_data';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import 'package:image/image.dart' as img;
 
-/// DINOv2 ViT-S/14: ảnh 224x224 -> vector 384 chiều (CLS đã qua layernorm).
-/// Xuất bằng tool/export_dino_onnx.py; tiền xử lý phải khớp script đó:
+/// Bộ embedding cho bước AI: hiện là MobileNetV3-Large (torchvision, ImageNet),
+/// ảnh 224x224 -> vector 960 chiều (sau global average pooling, bỏ classifier).
+/// Xuất bằng tool/export_mobilenet_onnx.py; tiền xử lý phải khớp script đó:
 /// RGB, chia 255, trừ mean [0.485, 0.456, 0.406], chia std [0.229, 0.224, 0.225].
+/// Đổi sang MobileNetV2 thì đặt dinoDim = 1280 (script in ra số chiều).
+/// Tên `dino*` được giữ nguyên để không phá tool/calibrate, score_pairs và test.
 const int dinoSize = 224;
-const int dinoDim = 384;
-const String dinoAsset = 'assets/models/dino.onnx';
+const int dinoDim = 960;
+const String dinoAsset = 'assets/models/mobilenet.onnx';
 
 const _mean = [0.485, 0.456, 0.406];
 const _std = [0.229, 0.224, 0.225];

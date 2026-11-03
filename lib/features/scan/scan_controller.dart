@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:photo_manager/photo_manager.dart';
 
@@ -33,8 +34,9 @@ class ScanController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> start() async {
     if (status == ScanStatus.scanning) return;
     await session?.dispose();
-    final s = ScanSession(
-        diag: scanDiagEnabled() ? ScanDiagnostics() : null);
+    // TẠM: luôn bật chẩn đoán để xuất CSV từ bản build hiện tại. Khôi phục
+    // thành `scanDiagEnabled() ? ScanDiagnostics() : null` khi xong.
+    final s = ScanSession(diag: ScanDiagnostics());
     session = s;
     status = ScanStatus.scanning;
     error = null;
@@ -97,6 +99,17 @@ class ScanController extends ChangeNotifier with WidgetsBindingObserver {
   ScanDiagnostics? get diag => session?.diag;
 
   /// Ghi CSV chẩn đoán (mọi tab) vào thư mục documents của app.
+  /// Chép CSV chẩn đoán vào clipboard để dán trực tiếp vào chat.
+  /// Trả về số dòng, hoặc null nếu chưa có dữ liệu chẩn đoán.
+  Future<int?> copyDiagCsv() async {
+    final s = session;
+    final d = s?.diag;
+    if (s == null || d == null) return null;
+    final csv = d.toCsv({'dup': s.groups});
+    await Clipboard.setData(ClipboardData(text: csv));
+    return '\n'.allMatches(csv).length;
+  }
+
   Future<File?> exportDiagCsv() async {
     final s = session;
     final d = s?.diag;

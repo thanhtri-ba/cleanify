@@ -24,8 +24,10 @@ class GroupPage extends StatefulWidget {
 
 class _GroupPageState extends State<GroupPage> {
   /// Mặc định giữ ảnh đầu tiên, chọn các ảnh còn lại để xóa.
+  /// Nhóm tương tự (gần giống, có thể khác nhau) KHÔNG chọn sẵn ảnh nào.
   late final Set<String> _selected = {
-    for (final e in widget.group.items.skip(1)) e.asset.id
+    if (widget.group.kind == GroupKind.duplicate)
+      for (final e in widget.group.items.skip(1)) e.asset.id
   };
 
   List<DuplicateItem> get _items => widget.group.items;
@@ -111,7 +113,13 @@ class _GroupPageState extends State<GroupPage> {
           final selected = _selected.contains(item.asset.id);
           final label = item.exact
               ? (i == 0 ? 'Giữ lại (đề xuất)' : 'Giống hệt')
-              : '${item.similarity?.toStringAsFixed(1) ?? '—'}%${item.byModel ? ' · AI' : ''}';
+              : item.localInliers != null
+                  ? 'Cùng cảnh · ${item.localInliers} điểm khớp'
+                  : item.modelCosine != null
+                  ? 'AI · cùng nội dung ${(item.modelCosine! * 100).round()}%'
+                  : item.viaOriginal
+                  ? 'Bản đã chỉnh · khớp bản gốc'
+                  : '${item.similarity?.toStringAsFixed(1) ?? '—'}%${item.byModel ? ' · AI' : ''}';
           return GestureDetector(
             onTap: () => setState(() {
               selected ? _selected.remove(item.asset.id) : _selected.add(item.asset.id);

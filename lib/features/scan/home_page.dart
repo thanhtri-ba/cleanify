@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui' show FontFeature;
 
 import 'package:flutter/material.dart';
 
@@ -101,7 +100,9 @@ class _StatusArea extends StatelessWidget {
           children: [
             LinearProgressIndicator(value: p?.fraction),
             const SizedBox(height: 12),
-            Text(controller.paused ? 'Đã tạm dừng' : (p?.label ?? 'Đang chuẩn bị…')),
+            Text(controller.paused
+                ? 'Đã tạm dừng'
+                : (p?.label ?? 'Đang chuẩn bị…')),
             const SizedBox(height: 8),
             _ElapsedTimer(controller: controller),
             const SizedBox(height: 16),
@@ -109,8 +110,10 @@ class _StatusArea extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 OutlinedButton.icon(
-                  onPressed: controller.paused ? controller.resume : controller.pause,
-                  icon: Icon(controller.paused ? Icons.play_arrow : Icons.pause),
+                  onPressed:
+                      controller.paused ? controller.resume : controller.pause,
+                  icon:
+                      Icon(controller.paused ? Icons.play_arrow : Icons.pause),
                   label: Text(controller.paused ? 'Tiếp tục' : 'Tạm dừng'),
                 ),
                 const SizedBox(width: 12),
@@ -134,7 +137,8 @@ class _StatusArea extends StatelessWidget {
             Text(controller.error ?? 'Lỗi không xác định',
                 style: TextStyle(color: Theme.of(context).colorScheme.error)),
             const SizedBox(height: 12),
-            FilledButton(onPressed: controller.start, child: const Text('Thử lại')),
+            FilledButton(
+                onPressed: controller.start, child: const Text('Thử lại')),
           ],
         );
       case ScanStatus.done:
@@ -144,7 +148,8 @@ class _StatusArea extends StatelessWidget {
             Card(
               child: ListTile(
                 leading: const Icon(Icons.check_circle_outline),
-                title: Text('${s.groups.length} nhóm ảnh trùng'),
+                title: Text('${s.duplicateGroups.length} nhóm ảnh trùng · '
+                    '${s.similarGroups.length} nhóm tương tự'),
                 subtitle: Text(
                   'Quét ${s.scanned} ảnh · '
                   '${s.reclaimable} ảnh có thể dọn'
@@ -154,7 +159,8 @@ class _StatusArea extends StatelessWidget {
             ),
             TimingsCard(timings: s.timings),
             const SizedBox(height: 8),
-            _ElapsedRow(label: 'Thời gian quét', text: formatElapsed(s.elapsed)),
+            _ElapsedRow(
+                label: 'Thời gian quét', text: formatElapsed(s.elapsed)),
             const SizedBox(height: 12),
             if (s.groups.isNotEmpty)
               FilledButton(

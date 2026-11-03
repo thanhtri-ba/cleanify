@@ -36,6 +36,7 @@ Float32List _make(int n, int dim, Map<int, int> planted, {int seed = 7}) {
 }
 
 void main() {
+  topKTests();
   test('findDinoEdges (so mọi cặp) tìm đúng cặp gần giống', () {
     const dim = 64;
     final emb = _make(30, dim, {3: 1, 20: 10});
@@ -70,6 +71,42 @@ void main() {
     expect(cosineOf(a, a), 1);
   });
 
+  test('centerEmbeddings: bỏ thành phần chung, giữ độ giống của cặp thật', () {
+    // Vector đều dương (như MobileNet sau pooling): ai cũng có cosine thô cao.
+    const dim = 64;
+    const n = 60;
+    final rnd = math.Random(3);
+    final raw = <int, Float32List>{};
+    for (var i = 0; i < n; i++) {
+      final v = Float32List(dim);
+      var s = 0.0;
+      for (var k = 0; k < dim; k++) {
+        v[k] = 5.0 + rnd.nextDouble();
+        s += v[k] * v[k];
+      }
+      final norm = math.sqrt(s);
+      for (var k = 0; k < dim; k++) {
+        v[k] /= norm;
+      }
+      raw[i] = v;
+    }
+    // Ảnh 1 là bản nhiễu rất nhỏ của ảnh 0.
+    final dup = Float32List.fromList(
+        [for (var k = 0; k < dim; k++) raw[0]![k] + (rnd.nextDouble() - 0.5) * 0.001]);
+    raw[1] = dup;
+
+    final rawUnrelated = cosineOf(raw[2], raw[3])!;
+    expect(rawUnrelated, greaterThan(0.9)); // cosine thô: ảnh bất kỳ cũng cao
+
+    final c = centerEmbeddings(raw);
+    expect(cosineOf(c[0], c[1])!, greaterThan(0.9)); // cặp thật vẫn giống
+    expect(cosineOf(c[2], c[3])!.abs(), lessThan(0.6)); // cặp lạ bị tách ra
+    for (final v in c.values) {
+      expect(cosineOf(v, v)!, closeTo(1, 1e-4)); // vẫn L2-normalize
+    }
+    expect(centerEmbeddings({}), isEmpty);
+  });
+
   test('dinoPreprocess ra tensor NCHW 3x224x224 đã chuẩn hóa', () {
     final bytes = Uint8List.fromList(
         img.encodeJpg(img.Image(width: dinoSize, height: dinoSize)));
@@ -79,5 +116,29 @@ void main() {
     expect(t[0], closeTo(-0.485 / 0.229, 0.1));
     expect(t[dinoSize * dinoSize], closeTo(-0.456 / 0.224, 0.1));
     expect(dinoPreprocess(Uint8List.fromList([1, 2, 3])), isNull);
+  });
+}
+
+void topKTests() {
+  group('findTopKEdges', () {
+    test('mỗi ảnh nối với hàng xóm gần nhất, bỏ cạnh dưới ngưỡng', () {
+      // 4 vector 2 chiều đã chuẩn hóa: 0~1 gần nhau, 2~3 gần nhau, hai cụm vuông góc.
+      final v = [
+        [1.0, 0.0],
+        [0.98, 0.199],
+        [0.0, 1.0],
+        [0.199, 0.98],
+      ];
+      final emb = Float32List.fromList([for (final r in v) ...r]);
+      final edges = findTopKEdges(emb: emb, n: 4, dim: 2, k: 1, minCos: 0.5);
+      final keys = edges.map((e) => '${e.a}-${e.b}').toSet();
+      expect(keys, {'0-1', '2-3'});
+    });
+
+    test('k giới hạn số cạnh mỗi ảnh', () {
+      final emb = Float32List.fromList(List.filled(10 * 2, 0.7071));
+      final edges = findTopKEdges(emb: emb, n: 10, dim: 2, k: 2, minCos: 0.5);
+      expect(edges.length, lessThanOrEqualTo(10 * 2));
+    });
   });
 }
