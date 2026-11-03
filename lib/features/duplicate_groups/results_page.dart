@@ -224,8 +224,9 @@ class _GroupTile extends StatelessWidget {
     if (group.allExact) {
       subtitle = 'Giống hệt nhau (SHA-256)';
     } else {
-      subtitle =
-          'Gần giống · độ giống bit-hash thấp nhất ${sim?.toStringAsFixed(1) ?? '—'}%';
+      subtitle = group.kind == GroupKind.similar
+          ? 'Gần giống · Hamming cao nhất ${sim == null ? '—' : ((100 - sim) * 2.56).round()}/256'
+          : 'Gần giống · độ giống bit-hash thấp nhất ${sim?.toStringAsFixed(1) ?? '—'}%';
     }
     return ListTile(
       onTap: onTap,

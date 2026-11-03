@@ -116,9 +116,11 @@ class _GroupPageState extends State<GroupPage> {
               : item.localInliers != null
                   ? 'Cùng cảnh · ${item.localInliers} điểm khớp'
                   : item.modelCosine != null
-                  ? 'AI · cùng nội dung ${(item.modelCosine! * 100).round()}%'
+                  ? 'AI · ${cosineBand(item.modelCosine!)} (cos ${item.modelCosine!.toStringAsFixed(2)})'
                   : item.viaOriginal
                   ? 'Bản đã chỉnh · khớp bản gốc'
+                  : widget.group.kind == GroupKind.similar && item.similarity != null
+                  ? 'Hash gần · Hamming ${((100 - item.similarity!) * 2.56).round()}/256'
                   : '${item.similarity?.toStringAsFixed(1) ?? '—'}%${item.byModel ? ' · AI' : ''}';
           return GestureDetector(
             onTap: () => setState(() {

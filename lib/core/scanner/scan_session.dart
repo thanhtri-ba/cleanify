@@ -43,6 +43,15 @@ class DuplicateItem {
 
 enum GroupKind { duplicate, similar }
 
+/// Nhãn mức giống theo cosine embedding. Cosine KHÔNG phải xác suất/%: các mốc này
+/// chỉ là quy ước thô, chưa calibrate, dùng để người xem nhìn nhanh.
+String cosineBand(double c) {
+  if (c >= 0.80) return 'Rất giống';
+  if (c >= 0.65) return 'Giống';
+  if (c >= 0.55) return 'Hơi giống';
+  return 'Khác biệt';
+}
+
 class DuplicateGroup {
   DuplicateGroup(this.items, {this.kind = GroupKind.duplicate});
 

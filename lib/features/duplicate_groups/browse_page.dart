@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 
+import '../../core/scanner/scan_session.dart' show cosineBand;
 import '../scan/scan_controller.dart';
 
 /// Lưới tất cả ảnh đã quét. Chạm vào một ảnh để xem các ảnh giống nó nhất theo AI.
@@ -90,9 +91,10 @@ class NeighborsPage extends StatelessWidget {
                   child: Container(
                     color: Colors.black54,
                     padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Text('${(nb[i].cosine * 100).round()}%',
+                    child: Text(
+                        '#${i + 1} · ${cosineBand(nb[i].cosine)} · ${nb[i].cosine.toStringAsFixed(2)}',
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white)),
+                        style: const TextStyle(color: Colors.white, fontSize: 11)),
                   ),
                 ),
               ]),
