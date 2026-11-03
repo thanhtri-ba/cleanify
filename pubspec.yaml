@@ -1,0 +1,27 @@
+name: cleanify
+description: Stateless offline duplicate photo scanner (SHA-256 + PDQ-style hash + LSH, bổ sung DINOv2 ONNX). No database.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  photo_manager: ^3.6.0
+  photo_manager_image_provider: ^2.2.0
+  crypto: ^3.0.3
+  image: ^4.2.0
+  path_provider: ^2.1.6
+  flutter_onnxruntime: ^1.8.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/models/

@@ -6,9 +6,10 @@ Kết quả nằm trong `ScanSession` (RAM), mất khi đóng app hoặc khi b�
 ## Pipeline
 
 SHA-256 (stream, exact) → PDQ-style 256-bit hash (thumbnail 128px → 64×64 → DCT 16×16) →
-LSH (16 band × 16 bit) + Hamming → (tùy chọn) DINO xác minh vùng mơ hồ → nhóm bằng Union-Find.
+Hamming (≤ 40 trên 256 bit, tức độ giống PDQ ≥ 84%) → nhóm bằng Union-Find.
 
-Batch mặc định 256 ảnh, I/O song song 16, Hamming ≤ 24 (chắc chắn ≤ 12). Đây là điểm khởi đầu, cần benchmark.
+Thư viện tới 6000 ảnh so mọi cặp (không sót); lớn hơn dùng LSH (16 band × 16 bit), recall của cặp Hamming cao là xác suất.
+SHA-256 chỉ tính cho ảnh nghi trùng (PDQ trùng khít hoặc nằm trong cặp ứng viên). Batch 128 ảnh, thumbnail song song 8.
 
 ## Dùng vào project Cleanify có sẵn
 
@@ -28,11 +29,3 @@ Batch mặc định 256 ảnh, I/O song song 16, Hamming ≤ 24 (chắc chắn �
      <string>Cleanify cần đọc thư viện ảnh để tìm ảnh trùng.</string>
      ```
 5. `flutter test` rồi `flutter run` trên thiết bị thật (cần ảnh trong thư viện).
-
-## Deep Scan (chưa bật)
-
-`lib/engines/dino/dino_engine.dart` là interface. Cần: file `dino.onnx`, input size, số chiều embedding.
-Khi có, viết implementation ONNX Runtime Mobile và truyền vào `ScanOrchestrator(dino: ...)`.
-Hiện Deep Scan chỉ xác minh cặp mơ hồ do PDQ tìm ra; tìm "cùng vật thể khác góc chụp" cần tầng
-tìm ứng viên riêng (xem mục DINO trong tài liệu kiến trúc).
-# cleanify

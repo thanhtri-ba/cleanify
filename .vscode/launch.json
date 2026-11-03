@@ -1,0 +1,40 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Eval 1: sinh cặp ứng viên",
+      "type": "debugpy", "request": "launch", "console": "integratedTerminal",
+      "program": "${workspaceFolder}/tool/build_eval_pairs.py",
+      "args": ["eval_real", "eval_out"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Eval 2: gán nhãn (mở http://127.0.0.1:8765)",
+      "type": "debugpy", "request": "launch", "console": "integratedTerminal",
+      "program": "${workspaceFolder}/tool/label_pairs.py",
+      "args": ["--src", "eval_real", "--out", "eval_out"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Eval 3: tính điểm (PDQ + DINO + ReID)",
+      "type": "debugpy", "request": "launch", "console": "integratedTerminal",
+      "program": "${workspaceFolder}/tool/score_pairs.py",
+      "args": ["--src", "eval_real", "--out", "eval_out"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Eval 3b: tính điểm với PDQ từ Dart",
+      "type": "debugpy", "request": "launch", "console": "integratedTerminal",
+      "program": "${workspaceFolder}/tool/score_pairs.py",
+      "args": ["--src", "eval_real", "--out", "eval_out", "--pdq-dart", "eval_out/pdq_dart.csv"],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Eval 4: calibrate ngưỡng",
+      "type": "debugpy", "request": "launch", "console": "integratedTerminal",
+      "program": "${workspaceFolder}/tool/calibrate.py",
+      "args": ["--out", "eval_out"],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

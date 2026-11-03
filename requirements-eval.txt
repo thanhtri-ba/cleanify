@@ -1,0 +1,9 @@
+# Môi trường Python cho bộ calibrate ngưỡng (tool/build_eval_pairs.py, label_pairs.py,
+# score_pairs.py, calibrate.py). .venv hiện có đã đủ các gói này trừ pillow-heif.
+numpy
+pillow
+onnxruntime
+scipy
+matplotlib
+# Tùy chọn: đọc ảnh HEIC trực tiếp từ iPhone
+# pillow-heif
