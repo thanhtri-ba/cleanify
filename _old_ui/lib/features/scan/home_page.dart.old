@@ -1,0 +1,491 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+
+import '../../core/scanner/scan_progress.dart';
+import '../../core/scanner/scan_session.dart';
+import '../../core/ui/bento.dart';
+import '../duplicate_groups/results_page.dart';
+import 'scan_controller.dart';
+
+/// Màn chính (Bento Pop): idle / scanning / done / error.
+/// Logic vẫn nằm ở [ScanController]; file này chỉ dựng giao diện.
+class HomePage extends StatelessWidget {
+  const HomePage({super.key, required this.controller});
+  final ScanController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = BentoPalette.of(context);
+    return Scaffold(
+      backgroundColor: p.ground,
+      body: SafeArea(
+        child: ListenableBuilder(
+          listenable: controller,
+          builder: (context, _) => CustomScrollView(
+            slivers: [
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+                  child: _Body(controller: controller, p: p),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Bảng thời gian từng giai đoạn của lần quét (dùng ở màn kết quả).
+class TimingsCard extends StatelessWidget {
+  const TimingsCard({super.key, required this.timings});
+  final List<String> timings;
+
+  @override
+  Widget build(BuildContext context) {
+    if (timings.isEmpty) return const SizedBox.shrink();
+    return Card(
+      margin: const EdgeInsets.only(top: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Thời gian xử lý',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            SelectableText(
+              timings.join('\n'),
+              style: const TextStyle(
+                  fontFamily: 'Menlo', fontSize: 12, height: 1.4),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Body extends StatelessWidget {
+  const _Body({required this.controller, required this.p});
+  final ScanController controller;
+  final BentoPalette p;
+
+  @override
+  Widget build(BuildContext context) {
+    final String title;
+    final String body;
+    final Widget hero;
+    final Widget actions;
+
+    switch (controller.status) {
+      case ScanStatus.idle:
+        title = 'Dọn ảnh trùng';
+        body = 'Kết quả chỉ nằm trong bộ nhớ và mất khi bạn đóng app. '
+            'Cleanify không lưu lịch sử quét.';
+        hero = _idleHero(p);
+        actions = BentoButton(
+          label: 'Bắt đầu quét',
+          icon: Icons.search_rounded,
+          onPressed: controller.start,
+        );
+      case ScanStatus.scanning:
+        title = controller.paused ? 'Đã tạm dừng' : 'Đang quét ảnh';
+        body = 'Ảnh vẫn ở trên máy. Bạn có thể tạm dừng hoặc hủy bất cứ lúc nào.';
+        hero = _scanningHero(p);
+        actions = Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            BentoButton(
+              label: controller.paused ? 'Tiếp tục' : 'Tạm dừng',
+              icon: controller.paused
+                  ? Icons.play_arrow_rounded
+                  : Icons.pause_rounded,
+              bg: p.ink,
+              fg: p.ground,
+              onPressed: controller.paused ? controller.resume : controller.pause,
+            ),
+            const SizedBox(height: 4),
+            BentoTextButton(
+                label: 'Hủy', color: p.inkMuted, onPressed: controller.cancel),
+            Text(
+              'Tạm dừng có hiệu lực ở ranh giới batch.',
+              textAlign: TextAlign.center,
+              style: bentoText(12, 16, 400, p.inkMuted),
+            ),
+          ],
+        );
+      case ScanStatus.error:
+        title = 'Chưa quét xong';
+        body = 'Chưa có ảnh nào bị xóa. Bạn có thể thử lại an toàn.';
+        hero = _errorHero(p);
+        actions = BentoButton(
+          label: 'Thử lại',
+          icon: Icons.refresh_rounded,
+          onPressed: controller.start,
+        );
+      case ScanStatus.done:
+        final s = controller.session!;
+        title = 'Quét xong';
+        final extras = <String>[
+          if (s.similarGroups.isNotEmpty)
+            'Có thêm ${s.similarGroups.length} nhóm ảnh tương tự.',
+          if (s.hashFailures > 0) '${s.hashFailures} ảnh không đọc được.',
+        ];
+        body = [
+          if (s.groups.isEmpty)
+            'Không tìm thấy ảnh trùng nào.'
+          else
+            'Xem và chọn ảnh muốn xóa. Chỉ xóa khi bạn xác nhận.',
+          ...extras,
+        ].join(' ');
+        hero = _doneHero(p, s);
+        actions = Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (s.groups.isNotEmpty) ...[
+              BentoButton(
+                label: 'Xem kết quả',
+                trailing: Icons.arrow_forward_rounded,
+                onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => ResultsPage(controller: controller),
+                )),
+              ),
+              const SizedBox(height: 8),
+            ],
+            Row(children: [
+              Expanded(
+                child: BentoButton(
+                  label: 'Quét lại',
+                  height: 44,
+                  bg: p.raised,
+                  fg: p.ink,
+                  onPressed: controller.start,
+                ),
+              ),
+              Expanded(
+                child: BentoTextButton(
+                  label: 'Xóa kết quả khỏi bộ nhớ',
+                  size: 13,
+                  color: p.inkMuted,
+                  onPressed: controller.clearResults,
+                ),
+              ),
+            ]),
+          ],
+        );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _Header(p: p),
+        Expanded(child: Center(child: hero)),
+        const SizedBox(height: 24),
+        Text(title, style: bentoDisplay(24, 30, 500, p.ink)),
+        const SizedBox(height: 12),
+        Text(body, style: bentoText(15, 22, 400, p.inkMuted)),
+        const SizedBox(height: 24),
+        actions,
+      ],
+    );
+  }
+
+  // ---- heroes ----
+  Widget _idleHero(BentoPalette p) {
+    Widget small(IconData icon, String title, String sub) => BentoTile(
+          height: 136,
+          bg: p.surface,
+          fg: p.ink,
+          rings: false,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              BentoIconDisc(icon: icon, color: p.ink),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(title, style: bentoDisplay(20, 26, 600, p.ink)),
+                  const SizedBox(height: 2),
+                  Text(sub, style: bentoText(13, 18, 500, p.inkMuted)),
+                ],
+              ),
+            ],
+          ),
+        );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const BentoTile(
+          height: 220,
+          bg: kBentoViolet,
+          fg: kBentoOnViolet,
+          radius: kBentoQuarter,
+          child: BentoTileBody(
+            icon: Icons.center_focus_strong_outlined,
+            value: 'Sẵn sàng',
+            valueSize: 32,
+            label: 'thư viện ảnh chưa được quét',
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+              child: small(
+                  Icons.verified_user_outlined, 'Trên máy', 'không tải ảnh lên')),
+          const SizedBox(width: 8),
+          Expanded(
+              child: small(
+                  Icons.check_rounded, 'Có xác nhận', 'trước mỗi lần xóa')),
+        ]),
+      ],
+    );
+  }
+
+  Widget _scanningHero(BentoPalette p) {
+    final prog = controller.progress;
+    final f = prog?.fraction;
+    final pct = f == null ? '…' : '${(f * 100).floor()}%';
+    final filled = f == null ? 0 : (f * 8).ceil().clamp(0, 8);
+    final label =
+        controller.paused ? 'Đã tạm dừng' : (prog?.label ?? 'Đang chuẩn bị…');
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        BentoTile(
+          height: 220,
+          bg: kBentoAzure,
+          fg: kBentoOnBright,
+          radius: kBentoQuarter,
+          child: BentoTileBody(
+            icon: Icons.center_focus_strong_outlined,
+            value: pct,
+            big: true,
+            label: label,
+            extra: Padding(
+              padding: const EdgeInsets.only(top: 14),
+              child: BentoSegmentBar(
+                filled: filled,
+                color: kBentoOnBright,
+                semanticLabel: f == null
+                    ? 'Đang chuẩn bị'
+                    : 'Tiến độ quét ${(f * 100).floor()} phần trăm',
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        _ElapsedTile(controller: controller, p: p),
+      ],
+    );
+  }
+
+  Widget _doneHero(BentoPalette p, ScanSession s) {
+    final groups = s.duplicateGroups.length;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        BentoTile(
+          height: 188,
+          bg: kBentoViolet,
+          fg: kBentoOnViolet,
+          radius: kBentoQuarter,
+          child: BentoTileBody(
+            icon: Icons.content_copy_outlined,
+            value: '$groups',
+            big: true,
+            label: 'nhóm ảnh trùng',
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: BentoTile(
+              height: 136,
+              bg: kBentoAmber,
+              fg: kBentoOnBright,
+              child: BentoTileBody(
+                icon: Icons.photo_outlined,
+                value: _n(s.reclaimable),
+                label: 'ảnh có thể dọn',
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: BentoTile(
+              height: 136,
+              bg: kBentoAzure,
+              fg: kBentoOnBright,
+              child: BentoTileBody(
+                icon: Icons.center_focus_strong_outlined,
+                value: _n(s.scanned),
+                label: 'ảnh đã quét',
+              ),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        _Pill(
+          p: p,
+          label: 'Thời gian quét',
+          value: formatElapsed(s.elapsed),
+        ),
+      ],
+    );
+  }
+
+  Widget _errorHero(BentoPalette p) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const BentoTile(
+          height: 188,
+          bg: kBentoEmber,
+          fg: kBentoOnBright,
+          radius: kBentoQuarter,
+          child: BentoTileBody(
+            icon: Icons.error_outline_rounded,
+            value: 'Lỗi',
+            valueSize: 32,
+            label: 'quá trình quét bị gián đoạn',
+          ),
+        ),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: p.surface,
+            borderRadius: BorderRadius.circular(28),
+          ),
+          child: Text(
+            controller.error ?? 'Lỗi không xác định',
+            style: bentoText(13, 18, 500, p.inkMuted),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// "2 000" (dấu cách nghìn, theo mockup).
+  static String _n(int v) {
+    final s = v.toString();
+    final b = StringBuffer();
+    for (var i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 == 0) b.write(' ');
+      b.write(s[i]);
+    }
+    return b.toString();
+  }
+}
+
+class _Header extends StatelessWidget {
+  const _Header({required this.p});
+  final BentoPalette p;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: 44,
+        child: Row(children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: const BoxDecoration(
+                color: kBentoViolet, shape: BoxShape.circle),
+            child: const Icon(Icons.auto_awesome_outlined,
+                size: 20, color: kBentoOnViolet),
+          ),
+          const SizedBox(width: 10),
+          Text('Cleanify', style: bentoDisplay(18, 24, 500, p.ink)),
+        ]),
+      );
+}
+
+class _Pill extends StatelessWidget {
+  const _Pill({required this.p, required this.label, required this.value});
+  final BentoPalette p;
+  final String label, value;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        height: 56,
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        decoration: BoxDecoration(
+          color: p.surface,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(children: [
+          Icon(Icons.schedule_rounded, size: 20, color: p.ink),
+          const SizedBox(width: 12),
+          Text(label, style: bentoText(13, 18, 500, p.inkMuted)),
+          const Spacer(),
+          Text(value, style: bentoDisplay(14, 18, 600, p.ink)),
+        ]),
+      );
+}
+
+/// Ô thời gian đã chạy. Chỉ rebuild đoạn text mỗi 250ms, không rebuild cả
+/// trang. Stopwatch nằm ở [ScanController] nên tạm dừng thì giá trị đứng yên.
+class _ElapsedTile extends StatefulWidget {
+  const _ElapsedTile({required this.controller, required this.p});
+  final ScanController controller;
+  final BentoPalette p;
+
+  @override
+  State<_ElapsedTile> createState() => _ElapsedTileState();
+}
+
+class _ElapsedTileState extends State<_ElapsedTile> {
+  late final Timer _ticker;
+  late String _text = formatElapsed(widget.controller.elapsed);
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      final next = formatElapsed(widget.controller.elapsed);
+      if (next != _text) setState(() => _text = next);
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.p;
+    return Container(
+      height: 96,
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      decoration: BoxDecoration(
+        color: p.surface,
+        borderRadius: BorderRadius.circular(28),
+      ),
+      child: Row(children: [
+        BentoIconDisc(icon: Icons.schedule_rounded, color: p.ink),
+        const SizedBox(width: 16),
+        Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(_text, style: bentoDisplay(28, 32, 600, p.ink)),
+            const SizedBox(height: 2),
+            Text('đã chạy', style: bentoText(13, 18, 500, p.inkMuted)),
+          ],
+        ),
+      ]),
+    );
+  }
+}

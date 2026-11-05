@@ -2,8 +2,10 @@ import 'package:photo_manager/photo_manager.dart';
 
 import 'scan_session.dart';
 
-/// Ngưỡng độ giống (%) mặc định của "Dọn nhanh".
-const double kBulkCleanupDefaultSimilarity = 84.0;
+/// Ngưỡng độ giống (%) để TỰ CHỌN xóa sẵn. Cao hơn ngưỡng gom nhóm (87,5%) có chủ
+/// ý: ảnh giống 87,5-94% vẫn nằm trong nhóm để xem nhưng mặc định ở trạng thái
+/// giữ, người dùng tự quyết. 94,0 tương ứng Hamming <= 15; ảnh trùng SHA-256 là 100.
+const double kBulkCleanupDefaultSimilarity = 94.0;
 
 /// Ngưỡng thấp nhất người dùng được kéo thanh trượt xuống.
 const double kBulkCleanupMinSimilarity = 80.0;
@@ -44,10 +46,13 @@ class BulkCleanupPlan {
 /// - Không bao giờ xóa hết một nhóm (ảnh giữ lại luôn nằm ngoài danh sách xóa).
 /// - Ảnh là "ảnh giữ lại" của bất kỳ nhóm nào thì không bị nhóm khác xóa.
 /// - Ảnh không có độ giống (null và không phải trùng SHA-256) không bị xóa.
+/// - Ảnh yêu thích và ảnh trong [protectedIds] (vd. ảnh đã chỉnh sửa) không bao giờ
+///   được tự chọn xóa; người dùng vẫn tự chọn tay được.
 /// - Mỗi ảnh chỉ xuất hiện một lần.
 BulkCleanupPlan planBulkCleanup(
   List<DuplicateGroup> groups, {
   required double minSimilarity,
+  Set<String> protectedIds = const {},
 }) {
   final protected = <String>{};
   for (final g in groups) {
@@ -70,6 +75,7 @@ BulkCleanupPlan planBulkCleanup(
       // 1e-6: tránh lệch do số thực khi s đúng bằng ngưỡng.
       if (s == null || s + 1e-6 < minSimilarity) continue;
       final id = item.asset.id;
+      if (item.asset.isFavorite || protectedIds.contains(id)) continue;
       if (protected.contains(id) || !seen.add(id)) continue;
       deletes[g.kind]!.add(item.asset);
       any = true;

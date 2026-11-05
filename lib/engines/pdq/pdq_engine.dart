@@ -28,10 +28,21 @@ Uint64List? pdqHash(Uint8List imageBytes) {
   );
 
   final lum = Float64List(64 * 64);
-  for (var y = 0; y < 64; y++) {
-    for (var x = 0; x < 64; x++) {
-      final p = small.getPixel(x, y);
-      lum[y * 64 + x] = 0.299 * p.r + 0.587 * p.g + 0.114 * p.b;
+  // Đọc thẳng buffer byte (nhanh hơn nhiều so với getPixel từng điểm); giá trị
+  // luminance giống hệt đường getPixel nên hash không đổi.
+  final rgb = small.format == img.Format.uint8
+      ? small.getBytes(order: img.ChannelOrder.rgb)
+      : null;
+  if (rgb != null && rgb.length == 3 * 64 * 64) {
+    for (var i = 0, j = 0; i < 64 * 64; i++, j += 3) {
+      lum[i] = 0.299 * rgb[j] + 0.587 * rgb[j + 1] + 0.114 * rgb[j + 2];
+    }
+  } else {
+    for (var y = 0; y < 64; y++) {
+      for (var x = 0; x < 64; x++) {
+        final p = small.getPixel(x, y);
+        lum[y * 64 + x] = 0.299 * p.r + 0.587 * p.g + 0.114 * p.b;
+      }
     }
   }
 

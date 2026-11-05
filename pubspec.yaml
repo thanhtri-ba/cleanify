@@ -13,8 +13,10 @@ dependencies:
   photo_manager_image_provider: ^2.2.0
   crypto: ^3.0.3
   image: ^4.2.0
+  flutter_svg: ^2.0.10+1
   path_provider: ^2.1.6
   flutter_onnxruntime: ^1.8.1
+  flutter_local_notifications: ^17.2.4
 
 dev_dependencies:
   flutter_test:
@@ -25,3 +27,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/models/
+    - assets/onboarding/
+    - assets/brand/

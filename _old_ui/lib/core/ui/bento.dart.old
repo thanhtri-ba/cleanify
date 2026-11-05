@@ -1,0 +1,331 @@
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+/// Bento Pop dùng chung cho các màn ngoài onboarding.
+/// Màu rực cố định ở cả hai theme; nền/chữ đổi theo theme.
+/// Chữ trên violet là trắng; trên amber/azure/lime/ember là gần đen.
+const Color kBentoViolet = Color(0xFF7C4DFF); // trùng lặp
+const Color kBentoAmber = Color(0xFFFFB800); // dung lượng / có thể dọn
+const Color kBentoAzure = Color(0xFF2AA1F5); // đang quét
+const Color kBentoLime = Color(0xFFB4FF3C); // giữ / an toàn
+const Color kBentoEmber = Color(0xFFFF5A1F); // xóa / lỗi
+const Color kBentoOnBright = Color(0xFF0B0B0C);
+const Color kBentoOnViolet = Color(0xFFFFFFFF);
+
+class BentoPalette {
+  const BentoPalette({
+    required this.ground,
+    required this.surface,
+    required this.raised,
+    required this.line,
+    required this.ink,
+    required this.inkMuted,
+  });
+  final Color ground, surface, raised, line, ink, inkMuted;
+
+  static const dark = BentoPalette(
+    ground: Color(0xFF000000),
+    surface: Color(0xFF111113),
+    raised: Color(0xFF1C1C20),
+    line: Color(0xFF2B2B31),
+    ink: Color(0xFFFFFFFF),
+    inkMuted: Color(0xFFA3A3AD),
+  );
+  static const light = BentoPalette(
+    ground: Color(0xFFF3F1EC),
+    surface: Color(0xFFFFFFFF),
+    raised: Color(0xFFE9E6DF),
+    line: Color(0xFFD8D4CB),
+    ink: Color(0xFF0B0B0C),
+    inkMuted: Color(0xFF585862),
+  );
+
+  static BentoPalette of(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark ? dark : light;
+}
+
+/// Số liệu và tiêu đề: Unbounded (variable font). Chưa bundle font thì Flutter
+/// rơi về font hệ thống, bố cục vẫn đúng.
+TextStyle bentoDisplay(
+        double size, double lineHeight, int weight, Color color) =>
+    TextStyle(
+      fontFamily: 'Unbounded',
+      fontSize: size,
+      height: lineHeight / size,
+      color: color,
+      fontWeight: FontWeight.values[weight ~/ 100 - 1],
+      fontVariations: [FontVariation('wght', weight.toDouble())],
+      letterSpacing: size * -0.01,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+
+TextStyle bentoText(double size, double lineHeight, int weight, Color color) =>
+    TextStyle(
+      fontSize: size,
+      height: lineHeight / size,
+      color: color,
+      fontWeight: FontWeight.values[weight ~/ 100 - 1],
+    );
+
+const BorderRadius kBentoQuarter = BorderRadius.only(
+  topLeft: Radius.circular(28),
+  topRight: Radius.circular(28),
+  bottomLeft: Radius.circular(28),
+  bottomRight: Radius.circular(96),
+);
+
+class _Contour extends CustomPainter {
+  const _Contour({required this.color});
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final far = math.sqrt(size.width * size.width + size.height * size.height);
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    for (double r = 10; r < far; r += 10) {
+      final a = (1 - (r / far) / 0.7).clamp(0.0, 1.0);
+      if (a <= 0) continue;
+      paint.color = color.withAlpha((255 * 0.22 * a).round());
+      canvas.drawCircle(Offset(size.width, 0), r, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _Contour old) => old.color != color;
+}
+
+/// Ô bento: nền màu, vòng đồng mức ở góc trên phải, góc bo 28 (hoặc quarter).
+class BentoTile extends StatelessWidget {
+  const BentoTile({
+    super.key,
+    required this.bg,
+    required this.fg,
+    required this.child,
+    this.height,
+    this.radius = const BorderRadius.all(Radius.circular(28)),
+    this.rings = true,
+    this.padding = 20,
+  });
+
+  final Color bg;
+  final Color fg;
+  final Widget child;
+  final double? height;
+  final BorderRadius radius;
+  final bool rings;
+  final double padding;
+
+  @override
+  Widget build(BuildContext context) {
+    final body = ClipRRect(
+      borderRadius: radius,
+      child: Stack(children: [
+        Positioned.fill(child: ColoredBox(color: bg)),
+        if (rings)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(painter: _Contour(color: fg)),
+            ),
+          ),
+        Padding(
+          padding: EdgeInsets.all(padding),
+          child:
+              DefaultTextStyle.merge(style: TextStyle(color: fg), child: child),
+        ),
+      ]),
+    );
+    if (height != null) return SizedBox(height: height, child: body);
+    return body;
+  }
+}
+
+class BentoIconDisc extends StatelessWidget {
+  const BentoIconDisc({
+    super.key,
+    required this.icon,
+    required this.color,
+    this.size = 40,
+    this.iconSize = 24,
+  });
+  final IconData icon;
+  final Color color;
+  final double size;
+  final double iconSize;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: size,
+        height: size,
+        decoration:
+            BoxDecoration(color: color.withAlpha(36), shape: BoxShape.circle),
+        child: Icon(icon, size: iconSize, color: color),
+      );
+}
+
+/// Icon trên, số lớn và nhãn dưới.
+class BentoTileBody extends StatelessWidget {
+  const BentoTileBody({
+    super.key,
+    this.icon,
+    required this.value,
+    required this.label,
+    this.big = false,
+    this.valueSize,
+    this.labelColor,
+    this.extra,
+  });
+  final IconData? icon;
+  final String value;
+  final String label;
+  final bool big;
+
+  /// Ghi đè cỡ chữ của [value] (vd. "Sẵn sàng" dùng 32).
+  final double? valueSize;
+  final Color? labelColor;
+
+  /// Hiện dưới nhãn (vd. thanh tiến độ).
+  final Widget? extra;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = DefaultTextStyle.of(context).style.color ?? kBentoOnBright;
+    final size = valueSize ?? (big ? 44.0 : 28.0);
+    final line = size >= 44 ? 46.0 : (size + 4);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        if (icon != null)
+          BentoIconDisc(icon: icon!, color: fg)
+        else
+          const SizedBox(),
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(value, style: bentoDisplay(size, line, 600, fg)),
+            SizedBox(height: big ? 4 : 2),
+            Text(label, style: bentoText(13, 18, 500, labelColor ?? fg)),
+            if (extra != null) extra!,
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Thanh phân đoạn (8 đoạn mặc định). [filled] đoạn đầu tô đậm.
+class BentoSegmentBar extends StatelessWidget {
+  const BentoSegmentBar({
+    super.key,
+    required this.filled,
+    required this.color,
+    this.count = 8,
+    this.semanticLabel,
+  });
+  final int filled;
+  final int count;
+  final Color color;
+  final String? semanticLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: semanticLabel,
+      child: Row(children: [
+        for (var i = 0; i < count; i++) ...[
+          if (i > 0) const SizedBox(width: 4),
+          Expanded(
+            child: Container(
+              height: 4,
+              decoration: BoxDecoration(
+                color: i < filled ? color : color.withAlpha(71),
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+          ),
+        ],
+      ]),
+    );
+  }
+}
+
+/// Nút pill 56px. Mặc định violet; truyền [bg]/[fg] cho biến thể khác.
+class BentoButton extends StatelessWidget {
+  const BentoButton({
+    super.key,
+    required this.label,
+    required this.onPressed,
+    this.icon,
+    this.trailing,
+    this.bg = kBentoViolet,
+    this.fg = kBentoOnViolet,
+    this.height = 56,
+  });
+  final String label;
+  final VoidCallback? onPressed;
+  final IconData? icon;
+  final IconData? trailing;
+  final Color bg;
+  final Color fg;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: height,
+      child: FilledButton(
+        onPressed: onPressed,
+        style: FilledButton.styleFrom(
+          backgroundColor: bg,
+          foregroundColor: fg,
+          shape: const StadiumBorder(),
+          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[Icon(icon, size: 20), const SizedBox(width: 8)],
+            Text(label),
+            if (trailing != null) ...[
+              const SizedBox(width: 8),
+              Icon(trailing, size: 20),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Nút chữ 44px (touch target tối thiểu).
+class BentoTextButton extends StatelessWidget {
+  const BentoTextButton({
+    super.key,
+    required this.label,
+    required this.onPressed,
+    required this.color,
+    this.size = 15,
+  });
+  final String label;
+  final VoidCallback? onPressed;
+  final Color color;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: 44,
+        child: TextButton(
+          onPressed: onPressed,
+          style: TextButton.styleFrom(
+            foregroundColor: color,
+            minimumSize: const Size(44, 44),
+            textStyle: TextStyle(fontSize: size, fontWeight: FontWeight.w600),
+          ),
+          child: Text(label, textAlign: TextAlign.center),
+        ),
+      );
+}

@@ -124,4 +124,25 @@ void main() {
       expect(plan.deletes[GroupKind.similar] ?? const [], isEmpty);
     });
   });
+
+  group('planBulkCleanup bảo vệ ảnh', () {
+    DuplicateItem fav(String id, double sim) => DuplicateItem(
+        AssetEntity(id: id, typeInt: 1, width: 100, height: 100, isFavorite: true),
+        exact: false,
+        similarity: sim);
+
+    test('ảnh yêu thích không tự chọn xóa', () {
+      final plan = planBulkCleanup([
+        _g([_i('a', sim: 100), fav('b', 99), _i('c', sim: 95)]),
+      ], minSimilarity: 88);
+      expect(_ids(plan, GroupKind.duplicate), ['c']);
+    });
+
+    test('ảnh trong protectedIds (đã chỉnh sửa) không tự chọn xóa', () {
+      final plan = planBulkCleanup([
+        _g([_i('a', sim: 100), _i('b', sim: 99), _i('c', sim: 95)]),
+      ], minSimilarity: 88, protectedIds: {'b'});
+      expect(_ids(plan, GroupKind.duplicate), ['c']);
+    });
+  });
 }

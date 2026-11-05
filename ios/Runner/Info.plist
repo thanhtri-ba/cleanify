@@ -67,7 +67,7 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Cleanify cần đọc thư viện ảnh để tìm ảnh trùng.</string>
+	<string>Cleanify cần truy cập toàn bộ thư viện ảnh để tìm ảnh trùng và chỉ xóa những ảnh bạn xác nhận.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>

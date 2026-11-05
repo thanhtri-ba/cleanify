@@ -63,3 +63,4 @@ app.*.map.json
 # Môi trường Python ảnh riêng tư và ảnh cá nhân (không đưa lên git)
 /.venv/
 /zalodata/
+*.ipa

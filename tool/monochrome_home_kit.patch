@@ -1,0 +1,27 @@
+--- a/lib/features/home/home_kit.dart
++++ b/lib/features/home/home_kit.dart	2026-11-04 10:45:33.031005200 +0000
+@@ -2,15 +2,15 @@
+ 
+ /// Token và widget nhỏ dùng chung cho luồng Home → Quét → Kết quả → Dọn.
+ /// Theo Figma bộ 02 (nền #F9F9F9, chữ #1B1B1B, nút slate #70849F).
+-const kInk = Color(0xFF1B1B1B);
+-const kInk2 = Color(0xFF464646);
+-const kInk3 = Color(0xFF575757);
+-const kBg = Color(0xFFF9F9F9);
+-const kSurface = Color(0xFFF3F3F3);
+-const kChip = Color(0xFFEDEDED);
+-const kBorder = Color(0xFFE7E7E7);
+-const kSlate = Color(0xFF70849F);
+-const kBlue = Color(0xFF009DE5);
++const kInk = Color(0xFF111113);
++const kInk2 = Color(0xFF4A4A52);
++const kInk3 = Color(0xFF6B6B73);
++const kBg = Color(0xFFF4F4F5);
++const kSurface = Color(0xFFEEEEF0);
++const kChip = Color(0xFFEEEEF0);
++const kBorder = Color(0xFFE2E2E5);
++const kSlate = Color(0xFF111113);
++const kBlue = Color(0xFF3B6CF6);
+ 
+ class HCard extends StatelessWidget {
+   const HCard({super.key, required this.child, this.radius = 18, this.padding = 16});

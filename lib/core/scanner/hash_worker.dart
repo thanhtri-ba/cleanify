@@ -1,4 +1,6 @@
+import 'dart:io' show Platform;
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../../engines/pdq/pdq_engine.dart';
@@ -18,9 +20,28 @@ class HashOutput {
   final Uint64List? pdq;
 }
 
-/// Băm một batch trong isolate riêng để không chặn UI.
-Future<List<HashOutput>> hashBatch(List<HashInput> inputs) =>
-    Isolate.run(() => _hashBatch(inputs));
+/// Số isolate băm song song: chừa 1 lõi cho UI, tối đa 4 (băm PDQ chạy bằng Dart
+/// nên nhiều lõi giúp được, nhưng quá nhiều chỉ tốn RAM sao chép dữ liệu).
+final int _workers = math.max(1, math.min(4, Platform.numberOfProcessors - 1));
+
+/// Băm một batch ngoài isolate chính để không chặn UI. Batch được chia đều cho
+/// [_workers] isolate chạy song song; mỗi kết quả giữ nguyên [HashOutput.index]
+/// nên gộp lại không đổi nghĩa. Thứ tự đầu ra theo chỉ số đầu vào.
+Future<List<HashOutput>> hashBatch(List<HashInput> inputs) async {
+  if (inputs.length < 2 || _workers == 1) {
+    return Isolate.run(() => _hashBatch(inputs));
+  }
+  final k = math.min(_workers, inputs.length);
+  final size = (inputs.length + k - 1) ~/ k;
+  final parts = <List<HashInput>>[
+    for (var i = 0; i < inputs.length; i += size)
+      inputs.sublist(i, math.min(i + size, inputs.length)),
+  ];
+  final results = await Future.wait([
+    for (final part in parts) Isolate.run(() => _hashBatch(part)),
+  ]);
+  return [for (final r in results) ...r];
+}
 
 Future<List<HashOutput>> _hashBatch(List<HashInput> inputs) async {
   final out = <HashOutput>[];

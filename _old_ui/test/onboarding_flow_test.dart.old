@@ -1,0 +1,87 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:photo_manager/photo_manager.dart';
+
+import 'package:cleanify/features/onboarding/onboarding_flow.dart';
+
+/// Màn hình cỡ iPhone (390x844 logic) để mọi nút nằm trong khung nhìn.
+void _phone(WidgetTester t) {
+  t.view.physicalSize = const Size(1170, 2532);
+  t.view.devicePixelRatio = 3.0;
+  addTearDown(t.view.reset);
+}
+
+Future<void> _toPermission(WidgetTester t) async {
+  await t.tap(find.text('Bắt đầu'));
+  await t.pumpAndSettle();
+  await t.tap(find.text('Tiếp tục'));
+  await t.pumpAndSettle();
+  await t.tap(find.text('Tiếp tục'));
+  await t.pumpAndSettle();
+}
+
+void main() {
+  testWidgets('đi hết 3 bước rồi cấp quyền thì kết thúc onboarding',
+      (t) async {
+    _phone(t);
+    var finished = false;
+    await t.pumpWidget(MaterialApp(
+      home: OnboardingFlow(
+        onFinished: () => finished = true,
+        requestPermission: () async => PermissionState.authorized,
+      ),
+    ));
+    await _toPermission(t);
+    expect(find.text('Quyền truy cập ảnh'), findsOneWidget);
+    await t.tap(find.text('Cho phép truy cập ảnh'));
+    await t.pumpAndSettle();
+    expect(finished, isTrue);
+  });
+
+  testWidgets('quyền Limited vẫn được tính là có quyền', (t) async {
+    _phone(t);
+    var finished = false;
+    await t.pumpWidget(MaterialApp(
+      home: OnboardingFlow(
+        onFinished: () => finished = true,
+        requestPermission: () async => PermissionState.limited,
+      ),
+    ));
+    await _toPermission(t);
+    await t.tap(find.text('Cho phép truy cập ảnh'));
+    await t.pumpAndSettle();
+    expect(finished, isTrue);
+  });
+
+  testWidgets('bị từ chối thì hiện Mở Cài đặt và không kết thúc', (t) async {
+    _phone(t);
+    var finished = false;
+    await t.pumpWidget(MaterialApp(
+      home: OnboardingFlow(
+        onFinished: () => finished = true,
+        requestPermission: () async => PermissionState.denied,
+      ),
+    ));
+    await _toPermission(t);
+    await t.tap(find.text('Cho phép truy cập ảnh'));
+    await t.pumpAndSettle();
+    expect(finished, isFalse);
+    expect(find.text('Mở Cài đặt'), findsOneWidget);
+    expect(find.text('Bị từ chối'), findsOneWidget);
+  });
+
+  testWidgets('Bỏ qua nhảy thẳng tới màn quyền; Để sau thì kết thúc',
+      (t) async {
+    _phone(t);
+    var finished = false;
+    await t.pumpWidget(MaterialApp(
+      home: OnboardingFlow(onFinished: () => finished = true),
+    ));
+    await t.tap(find.text('Bỏ qua'));
+    await t.pumpAndSettle();
+    expect(find.text('Quyền truy cập ảnh'), findsOneWidget);
+    await t.tap(find.text('Để sau'));
+    await t.pumpAndSettle();
+    expect(finished, isTrue);
+  });
+}

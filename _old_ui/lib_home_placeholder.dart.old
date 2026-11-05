@@ -1,0 +1,42 @@
+import 'package:flutter/material.dart';
+
+/// Màn chính tạm thời sau onboarding. Giao diện Home sẽ được thiết kế và làm
+/// tiếp ở bước sau; logic quét vẫn nằm ở `features/scan/scan_controller.dart`.
+class HomePlaceholder extends StatelessWidget {
+  const HomePlaceholder({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8F8FB),
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Icon(Icons.auto_awesome_outlined,
+                    size: 32, color: Color(0xFF8A6CF5)),
+                SizedBox(height: 16),
+                Text(
+                  'Cleanify',
+                  style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF16161D)),
+                ),
+                SizedBox(height: 8),
+                Text(
+                  'Màn chính đang được thiết kế.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14, color: Color(0xFF6B7080)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

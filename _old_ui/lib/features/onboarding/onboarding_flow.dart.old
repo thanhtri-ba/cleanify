@@ -1,0 +1,938 @@
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+import 'package:photo_manager/photo_manager.dart';
+
+Future<PermissionState> _defaultRequest() =>
+    PhotoManager.requestPermissionExtend();
+Future<void> _defaultOpenSettings() => PhotoManager.openSetting();
+
+enum _Perm { initial, requesting, denied }
+
+// ---------------------------------------------------------------------------
+// Bento Pop: màu rực cố định ở cả hai theme; nền/chữ đổi theo theme.
+// Chữ trên violet là trắng; chữ trên amber/azure/lime là gần đen (đủ 4.5:1).
+// ---------------------------------------------------------------------------
+const Color kOnboardingAccent = Color(0xFF7C4DFF); // violet
+const Color _amber = Color(0xFFFFB800);
+const Color _azure = Color(0xFF2AA1F5);
+const Color _lime = Color(0xFFB4FF3C);
+const Color _onBright = Color(0xFF0B0B0C);
+const Color _onViolet = Color(0xFFFFFFFF);
+
+class _Palette {
+  const _Palette({
+    required this.ground,
+    required this.surface,
+    required this.raised,
+    required this.line,
+    required this.ink,
+    required this.inkMuted,
+  });
+  final Color ground, surface, raised, line, ink, inkMuted;
+
+  static const dark = _Palette(
+    ground: Color(0xFF000000),
+    surface: Color(0xFF111113),
+    raised: Color(0xFF1C1C20),
+    line: Color(0xFF2B2B31),
+    ink: Color(0xFFFFFFFF),
+    inkMuted: Color(0xFFA3A3AD),
+  );
+  static const light = _Palette(
+    ground: Color(0xFFF3F1EC),
+    surface: Color(0xFFFFFFFF),
+    raised: Color(0xFFE9E6DF),
+    line: Color(0xFFD8D4CB),
+    ink: Color(0xFF0B0B0C),
+    inkMuted: Color(0xFF585862),
+  );
+}
+
+/// Số liệu và tiêu đề: Unbounded (variable font). Nếu chưa bundle font vào
+/// assets thì Flutter tự rơi về font hệ thống, giao diện vẫn đúng bố cục.
+TextStyle _display(double size, double lineHeight, int weight, Color color) =>
+    TextStyle(
+      fontFamily: 'Unbounded',
+      fontSize: size,
+      height: lineHeight / size,
+      color: color,
+      fontWeight: FontWeight.values[weight ~/ 100 - 1],
+      fontVariations: [FontVariation('wght', weight.toDouble())],
+      letterSpacing: size * -0.01,
+    );
+
+TextStyle _text(double size, double lineHeight, int weight, Color color) =>
+    TextStyle(
+      fontSize: size,
+      height: lineHeight / size,
+      color: color,
+      fontWeight: FontWeight.values[weight ~/ 100 - 1],
+    );
+
+/// Onboarding 3 bước + màn xin quyền Ảnh. Không lưu cờ "đã xem" xuống đĩa
+/// (app stateless): nơi gọi quyết định có hiển thị hay không.
+class OnboardingFlow extends StatefulWidget {
+  const OnboardingFlow({
+    super.key,
+    required this.onFinished,
+    this.requestPermission = _defaultRequest,
+    this.openSettings = _defaultOpenSettings,
+  });
+
+  final VoidCallback onFinished;
+  final Future<PermissionState> Function() requestPermission;
+  final Future<void> Function() openSettings;
+
+  @override
+  State<OnboardingFlow> createState() => _OnboardingFlowState();
+}
+
+class _OnboardingFlowState extends State<OnboardingFlow> {
+  static const int _permStep = 3;
+  int _step = 0;
+  _Perm _perm = _Perm.initial;
+
+  void _go(int step) => setState(() => _step = step);
+
+  Future<void> _allow() async {
+    if (_perm == _Perm.requesting) return;
+    setState(() => _perm = _Perm.requesting);
+    PermissionState result;
+    try {
+      result = await widget.requestPermission();
+    } catch (_) {
+      result = PermissionState.denied;
+    }
+    if (!mounted) return;
+    if (result.hasAccess) {
+      widget.onFinished();
+    } else {
+      setState(() => _perm = _Perm.denied);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final p = dark ? _Palette.dark : _Palette.light;
+    return Scaffold(
+      backgroundColor: p.ground,
+      body: SafeArea(
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 250),
+          child: KeyedSubtree(
+            key: ValueKey(_step),
+            child: _step == _permStep ? _permissionPage(p) : _introPage(p),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---- intro (3 bước) ----
+  static const _intro = <_IntroData>[
+    _IntroData(
+      title: 'Dọn ảnh trùng, nhẹ máy ngay',
+      body: 'Cleanify tìm những ảnh giống nhau trong thư viện để bạn giải '
+          'phóng dung lượng.',
+      cta: 'Bắt đầu',
+    ),
+    _IntroData(
+      title: 'Giữ bản đẹp nhất, bỏ bản trùng',
+      body: 'Ảnh giống nhau được gom thành nhóm. Bạn xem và chọn, chỉ xóa '
+          'khi bạn xác nhận.',
+      cta: 'Tiếp tục',
+    ),
+    _IntroData(
+      title: 'Ảnh của bạn ở lại trên máy',
+      body: 'Việc quét và so sánh diễn ra ngay trên điện thoại. Mọi thao tác '
+          'xóa đều hỏi bạn trước.',
+      cta: 'Tiếp tục',
+    ),
+  ];
+
+  Widget _introPage(_Palette p) {
+    final d = _intro[_step];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            height: 44,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: const BoxDecoration(
+                        color: kOnboardingAccent, shape: BoxShape.circle),
+                    child: const Icon(Icons.auto_awesome_outlined,
+                        size: 20, color: _onViolet),
+                  ),
+                  const SizedBox(width: 10),
+                  Text('Cleanify', style: _display(18, 24, 500, p.ink)),
+                ]),
+                if (_step < 2)
+                  TextButton(
+                    onPressed: () => _go(_permStep),
+                    style: TextButton.styleFrom(
+                      minimumSize: const Size(44, 44),
+                      foregroundColor: p.inkMuted,
+                      textStyle: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    child: const Text('Bỏ qua'),
+                  ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Center(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: SizedBox(width: 358, child: _hero(p)),
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(d.title, style: _display(24, 30, 500, p.ink)),
+          const SizedBox(height: 12),
+          Text(d.body, style: _text(15, 22, 400, p.inkMuted)),
+          const SizedBox(height: 24),
+          _SegmentBar(step: _step),
+          const SizedBox(height: 20),
+          _PrimaryButton(
+            label: d.cta,
+            trailing: Icons.arrow_forward_rounded,
+            onPressed: () => _go(_step + 1),
+          ),
+          const SizedBox(height: 4),
+          SizedBox(
+            height: 44,
+            child: _step > 0
+                ? TextButton(
+                    onPressed: () => _go(_step - 1),
+                    style: TextButton.styleFrom(
+                      foregroundColor: p.inkMuted,
+                      textStyle: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w600),
+                    ),
+                    child: const Text('Quay lại'),
+                  )
+                : null,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _hero(_Palette p) {
+    switch (_step) {
+      case 0:
+        return _heroWelcome();
+      case 1:
+        return _heroGroup(p);
+      default:
+        return _heroPrivacy(p);
+    }
+  }
+
+  static const _quarter = BorderRadius.only(
+    topLeft: Radius.circular(28),
+    topRight: Radius.circular(28),
+    bottomLeft: Radius.circular(28),
+    bottomRight: Radius.circular(96),
+  );
+
+  Widget _heroWelcome() {
+    return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      _Tile(
+        height: 188,
+        bg: kOnboardingAccent,
+        fg: _onViolet,
+        radius: _quarter,
+        child: const _TileBody(
+          icon: Icons.content_copy_outlined,
+          value: '1 284',
+          big: true,
+          label: 'ảnh trùng tìm thấy',
+        ),
+      ),
+      const SizedBox(height: 8),
+      Row(children: [
+        Expanded(
+          child: AspectRatio(
+            aspectRatio: 1,
+            child: _Tile(
+              bg: _amber,
+              fg: _onBright,
+              child: const _TileBody(
+                icon: Icons.water_drop_outlined,
+                value: '3,2',
+                unit: 'GB',
+                label: 'có thể giải phóng',
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: AspectRatio(
+            aspectRatio: 1,
+            child: _Tile(
+              bg: _azure,
+              fg: _onBright,
+              oval: true,
+              padding: 16,
+              child: const _TileBody(
+                value: '30',
+                unit: 'ngày',
+                label: 'quét định kỳ',
+                centered: true,
+              ),
+            ),
+          ),
+        ),
+      ]),
+    ]);
+  }
+
+  Widget _heroGroup(_Palette p) {
+    return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: p.surface,
+          borderRadius: BorderRadius.circular(28),
+        ),
+        child: Column(children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Nhóm ảnh trùng', style: _text(13, 18, 500, p.inkMuted)),
+              Text('3 ảnh', style: _display(14, 18, 600, p.ink)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Row(children: [
+            Expanded(
+                child: _Thumb(
+              bg: const Color(0xFF2D4466),
+              sun: const Color(0xFFFFD27A),
+              hills: const Color(0xFF17263D),
+              keep: true,
+            )),
+            const SizedBox(width: 8),
+            Expanded(
+                child: _Thumb(
+              bg: const Color(0xFF283D5C),
+              sun: const Color(0xFFE8C06F),
+              hills: const Color(0xFF162338),
+            )),
+            const SizedBox(width: 8),
+            Expanded(
+                child: _Thumb(
+              bg: const Color(0xFF243850),
+              sun: const Color(0xFFD8B365),
+              hills: const Color(0xFF142034),
+            )),
+          ]),
+        ]),
+      ),
+      const SizedBox(height: 8),
+      Row(children: [
+        Expanded(
+          child: _Tile(
+            height: 136,
+            bg: _amber,
+            fg: _onBright,
+            child: const _TileBody(
+              icon: Icons.water_drop_outlined,
+              value: '3,2',
+              unit: 'GB',
+              label: 'giải phóng được',
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: _Tile(
+            height: 136,
+            bg: _lime,
+            fg: _onBright,
+            child: const _TileBody(
+              icon: Icons.check_rounded,
+              value: '1/3',
+              label: 'ảnh được giữ lại',
+            ),
+          ),
+        ),
+      ]),
+    ]);
+  }
+
+  Widget _heroPrivacy(_Palette p) {
+    return Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      _Tile(
+        height: 188,
+        bg: _lime,
+        fg: _onBright,
+        radius: _quarter,
+        child: const _TileBody(
+          icon: Icons.verified_user_outlined,
+          value: '100%',
+          big: true,
+          label: 'xử lý ngay trên iPhone',
+        ),
+      ),
+      const SizedBox(height: 8),
+      Row(children: [
+        Expanded(
+          child: _Tile(
+            height: 156,
+            bg: p.surface,
+            fg: p.ink,
+            rings: false,
+            child: _TileBody(
+              icon: Icons.cloud_off_outlined,
+              value: '0',
+              unit: 'ảnh',
+              label: 'tải lên, không cần tài khoản',
+              labelColor: p.inkMuted,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: _Tile(
+            height: 156,
+            bg: p.surface,
+            fg: p.ink,
+            rings: false,
+            child: _TileBody(
+              icon: Icons.undo_rounded,
+              value: '30',
+              unit: 'ngày',
+              label: 'hoàn tác trong Đã xóa gần đây',
+              labelColor: p.inkMuted,
+            ),
+          ),
+        ),
+      ]),
+    ]);
+  }
+
+  // ---- quyền Ảnh ----
+  Widget _permissionPage(_Palette p) {
+    final denied = _perm == _Perm.denied;
+    final requesting = _perm == _Perm.requesting;
+    return CustomScrollView(
+      slivers: [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SizedBox(
+                  height: 44,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Material(
+                        color: p.raised,
+                        shape: const CircleBorder(),
+                        child: IconButton(
+                          tooltip: 'Quay lại',
+                          onPressed: () => _go(2),
+                          constraints: const BoxConstraints.tightFor(
+                              width: 44, height: 44),
+                          icon: Icon(Icons.chevron_left_rounded,
+                              size: 24, color: p.ink),
+                        ),
+                      ),
+                      Text('Quyền truy cập ảnh',
+                          style: _text(15, 22, 600, p.ink)),
+                      const SizedBox(width: 44, height: 44),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                _Tile(
+                  height: 188,
+                  bg: kOnboardingAccent,
+                  fg: _onViolet,
+                  radius: _quarter,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const _IconDisc(
+                          icon: Icons.image_outlined,
+                          color: _onViolet,
+                          size: 56,
+                          iconSize: 30),
+                      Container(
+                        height: 32,
+                        padding: const EdgeInsets.symmetric(horizontal: 14),
+                        decoration: BoxDecoration(
+                          color: _onViolet.withAlpha(41),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                                color: _amber, shape: BoxShape.circle),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(denied ? 'Bị từ chối' : 'Chưa cấp quyền',
+                              style: _text(13, 18, 600, _onViolet)),
+                        ]),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text('Cho phép Cleanify đọc ảnh',
+                    style: _display(24, 30, 500, p.ink)),
+                const SizedBox(height: 12),
+                Text(
+                  'Cleanify cần đọc thư viện ảnh để tìm ảnh trùng và gợi ý '
+                  'bản nên giữ.',
+                  style: _text(15, 22, 400, p.inkMuted),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: p.surface,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Column(children: [
+                    _ReasonRow(
+                      p: p,
+                      icon: Icons.content_copy_outlined,
+                      title: 'Chỉ đọc để so sánh',
+                      caption: 'Ảnh không bị sửa hay tải lên.',
+                    ),
+                    Divider(height: 1, thickness: 1, color: p.line),
+                    _ReasonRow(
+                      p: p,
+                      icon: Icons.check_rounded,
+                      title: 'Xóa khi bạn xác nhận',
+                      caption: 'Ảnh xóa nằm trong Đã xóa gần đây 30 ngày.',
+                    ),
+                    Divider(height: 1, thickness: 1, color: p.line),
+                    _ReasonRow(
+                      p: p,
+                      icon: Icons.image_outlined,
+                      title: 'Chọn tất cả ảnh để quét đủ',
+                      caption: 'Nếu chỉ chọn vài ảnh, chỉ những ảnh đó được quét.',
+                    ),
+                  ]),
+                ),
+                const Spacer(),
+                const SizedBox(height: 12),
+                _PrimaryButton(
+                  label: denied ? 'Mở Cài đặt' : 'Cho phép truy cập ảnh',
+                  busy: requesting,
+                  onPressed: denied ? widget.openSettings : _allow,
+                ),
+                const SizedBox(height: 4),
+                SizedBox(
+                  height: 44,
+                  child: TextButton(
+                    onPressed: requesting ? null : widget.onFinished,
+                    style: TextButton.styleFrom(
+                      foregroundColor: p.inkMuted,
+                      textStyle: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w600),
+                    ),
+                    child: const Text('Để sau'),
+                  ),
+                ),
+                Text(
+                  denied
+                      ? 'Quyền Ảnh đang bị tắt. Mở Cài đặt để bật lại; nếu '
+                          'không, Cleanify không thể quét.'
+                      : 'Bạn có thể cấp quyền sau trong Cài đặt.',
+                  textAlign: TextAlign.center,
+                  style: _text(12, 16, 400, p.inkMuted),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _IntroData {
+  const _IntroData({
+    required this.title,
+    required this.body,
+    required this.cta,
+  });
+  final String title;
+  final String body;
+  final String cta;
+}
+
+// ---------------------------------------------------------------------------
+// Thành phần Bento Pop
+// ---------------------------------------------------------------------------
+
+/// Vòng đồng mức từ góc trên phải (hoặc từ tâm với [center]), mờ dần.
+class _Contour extends CustomPainter {
+  const _Contour({required this.color, this.center = false});
+  final Color color;
+  final bool center;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final diag = math.sqrt(size.width * size.width + size.height * size.height);
+    final origin =
+        center ? Offset(size.width / 2, size.height / 2) : Offset(size.width, 0);
+    final far = center ? diag / 2 : diag;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    for (double r = 10; r < far; r += 10) {
+      final t = r / far;
+      final a = center
+          ? ((t - 0.4) / 0.6).clamp(0.0, 1.0)
+          : (1 - t / 0.7).clamp(0.0, 1.0);
+      if (a <= 0) continue;
+      paint.color = color.withAlpha((255 * 0.22 * a).round());
+      canvas.drawCircle(origin, r, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _Contour old) =>
+      old.color != color || old.center != center;
+}
+
+class _Tile extends StatelessWidget {
+  const _Tile({
+    required this.bg,
+    required this.fg,
+    required this.child,
+    this.height,
+    this.radius = const BorderRadius.all(Radius.circular(28)),
+    this.oval = false,
+    this.rings = true,
+    this.padding = 20,
+  });
+
+  final Color bg;
+  final Color fg;
+  final Widget child;
+  final double? height;
+  final BorderRadius radius;
+  final bool oval;
+  final bool rings;
+  final double padding;
+
+  @override
+  Widget build(BuildContext context) {
+    final body = Stack(children: [
+      Positioned.fill(child: ColoredBox(color: bg)),
+      if (rings)
+        Positioned.fill(
+          child: IgnorePointer(
+            child: CustomPaint(painter: _Contour(color: fg, center: oval)),
+          ),
+        ),
+      Positioned.fill(
+        child: Padding(
+          padding: EdgeInsets.all(padding),
+          child: DefaultTextStyle.merge(style: TextStyle(color: fg), child: child),
+        ),
+      ),
+    ]);
+    final shaped = oval
+        ? ClipOval(child: body)
+        : ClipRRect(borderRadius: radius, child: body);
+    return height == null ? shaped : SizedBox(height: height, child: shaped);
+  }
+}
+
+class _IconDisc extends StatelessWidget {
+  const _IconDisc({
+    required this.icon,
+    required this.color,
+    this.size = 40,
+    this.iconSize = 24,
+  });
+  final IconData icon;
+  final Color color;
+  final double size;
+  final double iconSize;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: color.withAlpha(36),
+        shape: BoxShape.circle,
+      ),
+      child: Icon(icon, size: iconSize, color: color),
+    );
+  }
+}
+
+/// Một ô, một con số: icon trên, số lớn và nhãn dưới.
+class _TileBody extends StatelessWidget {
+  const _TileBody({
+    this.icon,
+    required this.value,
+    required this.label,
+    this.unit,
+    this.big = false,
+    this.centered = false,
+    this.labelColor,
+  });
+  final IconData? icon;
+  final String value;
+  final String? unit;
+  final String label;
+  final bool big;
+  final bool centered;
+  final Color? labelColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = DefaultTextStyle.of(context).style.color ?? _onBright;
+    final metric = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment:
+          centered ? CrossAxisAlignment.center : CrossAxisAlignment.start,
+      children: [
+        Text.rich(
+          TextSpan(children: [
+            TextSpan(
+              text: value,
+              style: big ? _display(44, 46, 600, fg) : _display(28, 32, 600, fg),
+            ),
+            if (unit != null)
+              TextSpan(
+                text: ' $unit',
+                style: _display(14, 18, 400, fg),
+              ),
+          ]),
+          textAlign: centered ? TextAlign.center : TextAlign.start,
+        ),
+        SizedBox(height: big ? 4 : 2),
+        Text(
+          label,
+          textAlign: centered ? TextAlign.center : TextAlign.start,
+          style: _text(13, 18, 500, labelColor ?? fg),
+        ),
+      ],
+    );
+    if (centered) return Center(child: metric);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        if (icon != null) _IconDisc(icon: icon!, color: fg) else const SizedBox(),
+        metric,
+      ],
+    );
+  }
+}
+
+/// Ảnh minh họa phẳng (mặt trời + đồi) cho nhóm ảnh trùng.
+class _ScenePainter extends CustomPainter {
+  const _ScenePainter(
+      {required this.bg, required this.sun, required this.hills});
+  final Color bg, sun, hills;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width / 100;
+    canvas.drawRect(Offset.zero & size, Paint()..color = bg);
+    canvas.drawCircle(Offset(70 * s, 30 * s), 10 * s, Paint()..color = sun);
+    final path = Path()
+      ..moveTo(0, 78 * s)
+      ..lineTo(28 * s, 46 * s)
+      ..lineTo(48 * s, 66 * s)
+      ..lineTo(66 * s, 48 * s)
+      ..lineTo(100 * s, 80 * s)
+      ..lineTo(100 * s, 100 * s)
+      ..lineTo(0, 100 * s)
+      ..close();
+    canvas.drawPath(path, Paint()..color = hills);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScenePainter old) => false;
+}
+
+class _Thumb extends StatelessWidget {
+  const _Thumb({
+    required this.bg,
+    required this.sun,
+    required this.hills,
+    this.keep = false,
+  });
+  final Color bg, sun, hills;
+  final bool keep;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(children: [
+      Semantics(
+        label: keep ? 'Ảnh minh họa, bản được giữ' : 'Ảnh minh họa, bản trùng',
+        image: true,
+        child: AspectRatio(
+          aspectRatio: 1,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: CustomPaint(
+                painter: _ScenePainter(bg: bg, sun: sun, hills: hills)),
+          ),
+        ),
+      ),
+      const SizedBox(height: 8),
+      Container(
+        height: 24,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: keep ? _lime : kOnboardingAccent,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          if (keep) ...const [
+            Icon(Icons.check_rounded, size: 14, color: _onBright),
+            SizedBox(width: 4),
+          ],
+          Text(keep ? 'Giữ' : 'Trùng',
+              style: _text(12, 16, 600, keep ? _onBright : _onViolet)),
+        ]),
+      ),
+    ]);
+  }
+}
+
+class _ReasonRow extends StatelessWidget {
+  const _ReasonRow({
+    required this.p,
+    required this.icon,
+    required this.title,
+    required this.caption,
+  });
+  final _Palette p;
+  final IconData icon;
+  final String title;
+  final String caption;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Row(children: [
+        _IconDisc(icon: icon, color: p.ink, iconSize: 22),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: _text(15, 22, 600, p.ink)),
+              Text(caption, style: _text(13, 18, 400, p.inkMuted)),
+            ],
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+class _SegmentBar extends StatelessWidget {
+  const _SegmentBar({required this.step});
+  final int step;
+
+  @override
+  Widget build(BuildContext context) {
+    final on = Theme.of(context).brightness == Brightness.dark
+        ? _Palette.dark.ink
+        : _Palette.light.ink;
+    return Semantics(
+      label: 'Bước ${step + 1} trên 3',
+      child: Row(children: [
+        for (var i = 0; i < 3; i++) ...[
+          if (i > 0) const SizedBox(width: 4),
+          Expanded(
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              height: 4,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                color: i <= step ? on : on.withAlpha(71),
+              ),
+            ),
+          ),
+        ],
+      ]),
+    );
+  }
+}
+
+class _PrimaryButton extends StatelessWidget {
+  const _PrimaryButton({
+    required this.label,
+    required this.onPressed,
+    this.busy = false,
+    this.trailing,
+  });
+  final String label;
+  final VoidCallback? onPressed;
+  final bool busy;
+  final IconData? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 56,
+      child: FilledButton(
+        onPressed: busy ? null : onPressed,
+        style: FilledButton.styleFrom(
+          backgroundColor: kOnboardingAccent,
+          foregroundColor: _onViolet,
+          disabledBackgroundColor: kOnboardingAccent,
+          disabledForegroundColor: _onViolet,
+          shape: const StadiumBorder(),
+          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+        ),
+        child: busy
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: _onViolet),
+              )
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(label),
+                  if (trailing != null) ...[
+                    const SizedBox(width: 8),
+                    Icon(trailing, size: 20),
+                  ],
+                ],
+              ),
+      ),
+    );
+  }
+}

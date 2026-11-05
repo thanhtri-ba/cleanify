@@ -36,6 +36,21 @@ final class PhotoEditsChannel {
           let out = editedIds(ids)
           DispatchQueue.main.async { result(out) }
         }
+      case "storage":
+        queue.async {
+          let out = storage()
+          DispatchQueue.main.async { result(out) }
+        }
+      case "screenshotIds":
+        queue.async {
+          let out = screenshotIds()
+          DispatchQueue.main.async { result(out) }
+        }
+      case "fileSizes":
+        queue.async {
+          let out = fileSizes(ids)
+          DispatchQueue.main.async { result(out) }
+        }
       case "originalThumbs":
         let side = (args["size"] as? Int) ?? 128
         queue.async {
@@ -62,6 +77,54 @@ final class PhotoEditsChannel {
     for asset in fetch(ids) {
       let types = PHAssetResource.assetResources(for: asset).map { $0.type }
       if types.contains(.adjustmentData) { out.append(asset.localIdentifier) }
+    }
+    return out
+  }
+
+  /// Dung lượng thiết bị: tổng và còn trống (byte). "Còn trống" dùng
+  /// volumeAvailableCapacityForImportantUsage, khớp số iOS hiển thị trong Cài đặt.
+  private static func storage() -> [String: Int] {
+    var out: [String: Int] = [:]
+    let url = URL(fileURLWithPath: NSHomeDirectory())
+    if let v = try? url.resourceValues(forKeys: [
+      .volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey,
+    ]) {
+      if let t = v.volumeTotalCapacity { out["total"] = t }
+      if let f = v.volumeAvailableCapacityForImportantUsage { out["free"] = Int(f) }
+    }
+    return out
+  }
+
+  /// localIdentifier của mọi ảnh chụp màn hình (iOS tự gắn subtype), mới nhất trước.
+  private static func screenshotIds() -> [String] {
+    let opts = PHFetchOptions()
+    opts.predicate = NSPredicate(
+      format: "(mediaSubtypes & %d) != 0", PHAssetMediaSubtype.photoScreenshot.rawValue)
+    opts.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+    var out: [String] = []
+    PHAsset.fetchAssets(with: .image, options: opts).enumerateObjects { asset, _, _ in
+      out.append(asset.localIdentifier)
+    }
+    return out
+  }
+
+  /// Dung lượng file (byte) của từng asset, lấy từ metadata PHAssetResource nên
+  /// KHÔNG tải gì từ iCloud. Lấy resource lớn nhất trong nhóm video (bản đã chỉnh
+  /// và bản gốc cùng tồn tại thì tính bản lớn hơn). Khóa "fileSize" không nằm trong
+  /// header công khai nhưng là KVC phổ biến; kiểm tra respondsToSelector để không
+  /// bị ngoại lệ nếu iOS đổi.
+  private static func fileSizes(_ ids: [String]) -> [String: Int] {
+    var out: [String: Int] = [:]
+    let sel = Selector(("fileSize"))
+    for asset in fetch(ids) {
+      var best = 0
+      for res in PHAssetResource.assetResources(for: asset) {
+        guard res.type == .video || res.type == .fullSizeVideo || res.type == .photo,
+              res.responds(to: sel),
+              let n = res.value(forKey: "fileSize") as? NSNumber else { continue }
+        best = max(best, n.intValue)
+      }
+      out[asset.localIdentifier] = best
     }
     return out
   }

@@ -10,6 +10,8 @@ import 'package:image/image.dart' as img;
 /// Xuất bằng tool/export_mobilenet_onnx.py; tiền xử lý phải khớp script đó:
 /// RGB, chia 255, trừ mean [0.485, 0.456, 0.406], chia std [0.229, 0.224, 0.225].
 /// Đổi sang MobileNetV2 thì đặt dinoDim = 1280 (script in ra số chiều).
+/// Muốn quay lại DINO (chậm hơn nhiều): dinoDim = 384 và
+/// dinoAsset = 'assets/models/dino.onnx'.
 /// Tên `dino*` được giữ nguyên để không phá tool/calibrate, score_pairs và test.
 const int dinoSize = 224;
 const int dinoDim = 960;
@@ -17,6 +19,12 @@ const String dinoAsset = 'assets/models/mobilenet.onnx';
 
 const _mean = [0.485, 0.456, 0.406];
 const _std = [0.229, 0.224, 0.225];
+
+final List<Float32List> _lut = [
+  for (var c = 0; c < 3; c++)
+    Float32List.fromList(
+        [for (var v = 0; v < 256; v++) (v / 255.0 - _mean[c]) / _std[c]]),
+];
 
 /// Ảnh JPEG/PNG bytes -> tensor NCHW (3*224*224) hoặc null nếu không giải mã được.
 Float32List? dinoPreprocess(Uint8List bytes) {
@@ -33,6 +41,20 @@ Float32List? dinoPreprocess(Uint8List bytes) {
         );
   const plane = dinoSize * dinoSize;
   final out = Float32List(3 * plane);
+  // Đọc thẳng buffer byte RGB (không tạo Pixel cho từng điểm ảnh) + bảng tra
+  // chuẩn hóa 256 giá trị/kênh: nhanh hơn nhiều so với getPixel + chia từng điểm.
+  final rgbBytes = small.format == img.Format.uint8
+      ? small.getBytes(order: img.ChannelOrder.rgb)
+      : null;
+  if (rgbBytes != null && rgbBytes.length == 3 * plane) {
+    final lut = _lut;
+    for (var i = 0, j = 0; i < plane; i++, j += 3) {
+      out[i] = lut[0][rgbBytes[j]];
+      out[plane + i] = lut[1][rgbBytes[j + 1]];
+      out[2 * plane + i] = lut[2][rgbBytes[j + 2]];
+    }
+    return out;
+  }
   for (var y = 0; y < dinoSize; y++) {
     for (var x = 0; x < dinoSize; x++) {
       final p = small.getPixel(x, y);

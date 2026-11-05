@@ -1,0 +1,77 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:cleanify/core/scanner/scan_progress.dart';
+import 'package:cleanify/core/scanner/scan_session.dart';
+import 'package:cleanify/features/scan/home_page.dart';
+import 'package:cleanify/features/scan/scan_controller.dart';
+
+void _phone(WidgetTester t) {
+  t.view.physicalSize = const Size(1170, 2532);
+  t.view.devicePixelRatio = 3.0;
+  addTearDown(t.view.reset);
+}
+
+Future<void> _pump(WidgetTester t, ScanController c, {ThemeMode? mode}) async {
+  await t.pumpWidget(MaterialApp(
+    themeMode: mode ?? ThemeMode.dark,
+    theme: ThemeData(brightness: Brightness.light),
+    darkTheme: ThemeData(brightness: Brightness.dark),
+    home: HomePage(controller: c),
+  ));
+}
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets('idle: hiện tiêu đề và nút Bắt đầu quét', (t) async {
+    _phone(t);
+    final c = ScanController();
+    addTearDown(c.dispose);
+    await _pump(t, c);
+    expect(find.text('Dọn ảnh trùng'), findsOneWidget);
+    expect(find.text('Sẵn sàng'), findsOneWidget);
+    expect(find.text('Bắt đầu quét'), findsOneWidget);
+  });
+
+  testWidgets('scanning: hiện %, thời gian, Tạm dừng / Hủy', (t) async {
+    _phone(t);
+    final c = ScanController()
+      ..status = ScanStatus.scanning
+      ..progress = const ScanProgress(ScanPhase.reading, 1240, 2000);
+    addTearDown(c.dispose);
+    await _pump(t, c);
+    expect(find.text('62%'), findsOneWidget);
+    expect(find.text('Đang băm ảnh 1240/2000'), findsOneWidget);
+    expect(find.text('Tạm dừng'), findsOneWidget);
+    expect(find.text('Hủy'), findsOneWidget);
+    expect(find.text('đã chạy'), findsOneWidget);
+  });
+
+  testWidgets('error: hiện thông báo lỗi và nút Thử lại', (t) async {
+    _phone(t);
+    final c = ScanController()
+      ..status = ScanStatus.error
+      ..error = 'Cần cấp quyền truy cập thư viện ảnh để quét.';
+    addTearDown(c.dispose);
+    await _pump(t, c);
+    expect(find.text('Chưa quét xong'), findsOneWidget);
+    expect(find.text('Cần cấp quyền truy cập thư viện ảnh để quét.'),
+        findsOneWidget);
+    expect(find.text('Thử lại'), findsOneWidget);
+  });
+
+  testWidgets('done không có nhóm: không có nút Xem kết quả', (t) async {
+    _phone(t);
+    final c = ScanController()
+      ..status = ScanStatus.done
+      ..session = (ScanSession()..scanned = 2000);
+    addTearDown(c.dispose);
+    await _pump(t, c, mode: ThemeMode.light);
+    expect(find.text('Quét xong'), findsOneWidget);
+    expect(find.textContaining('2 000'), findsOneWidget);
+    expect(find.text('Xem kết quả'), findsNothing);
+    expect(find.text('Quét lại'), findsOneWidget);
+    expect(find.text('Xóa kết quả khỏi bộ nhớ'), findsOneWidget);
+  });
+}

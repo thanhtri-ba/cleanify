@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:photo_manager/photo_manager.dart';
 
+import 'regroup.dart';
 import 'scan_diagnostics.dart';
 
 class DuplicateItem {
@@ -42,6 +43,27 @@ class DuplicateItem {
 }
 
 enum GroupKind { duplicate, similar }
+
+/// Nhóm "tương tự" sau khi bỏ các ảnh đã nằm trong một nhóm "trùng" trong [groups]:
+/// một ảnh chỉ thuộc một loại (trùng được ưu tiên) để hai loại không lẫn vào nhau.
+/// Nhóm còn dưới 2 ảnh thì bỏ. Chỉ trả về nhóm tương tự.
+List<DuplicateGroup> similarExcludingDuplicates(List<DuplicateGroup> groups) {
+  final dup = <String>{
+    for (final g in groups)
+      if (g.kind == GroupKind.duplicate)
+        for (final e in g.items) e.asset.id,
+  };
+  final out = <DuplicateGroup>[];
+  for (final g in groups) {
+    if (g.kind != GroupKind.similar) continue;
+    final items = [
+      for (final e in g.items)
+        if (!dup.contains(e.asset.id)) e
+    ];
+    if (items.length > 1) out.add(DuplicateGroup(items, kind: GroupKind.similar));
+  }
+  return out;
+}
 
 /// Nhãn mức giống theo cosine embedding. Cosine KHÔNG phải xác suất/%: các mốc này
 /// chỉ là quy ước thô, chưa calibrate, dùng để người xem nhìn nhanh.
@@ -104,6 +126,10 @@ class ScanSession {
 
   final List<DuplicateGroup> groups = [];
 
+  /// Dữ liệu PDQ để gom lại nhóm trùng theo ngưỡng người dùng chọn. Null nếu chưa quét
+  /// kiểu "trùng". Chỉ trong RAM, xóa khi [dispose].
+  PdqIndex? pdqIndex;
+
   /// Mọi ảnh đã quét (đúng thứ tự quét) để màn hình "Xem ảnh" duyệt.
   List<AssetEntity> assets = const [];
 
@@ -134,6 +160,9 @@ class ScanSession {
   final List<String> timings = [];
   int scanned = 0;
   int hashFailures = 0;
+
+  /// Số nhóm trùng ước tính ngay sau bước so khớp, để màn quét hiện số tăng dần thay vì 0.
+  int liveGroups = 0;
   Duration elapsed = Duration.zero;
 
   bool get paused => _paused;
@@ -167,6 +196,7 @@ class ScanSession {
       duplicateGroups.fold(0, (sum, g) => sum + (g.items.length - 1));
 
   void removeAssets(Set<String> ids) {
+    pdqIndex?.removed.addAll(ids);
     assets = [for (final a in assets) if (!ids.contains(a.id)) a];
     for (final id in ids) {
       embeddings.remove(id);
@@ -182,6 +212,7 @@ class ScanSession {
     resume();
     groups.clear();
     embeddings.clear();
+    pdqIndex = null;
     assets = const [];
     diag?.clear();
   }

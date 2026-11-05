@@ -1,0 +1,428 @@
+import 'package:flutter/material.dart';
+import 'package:photo_manager/photo_manager.dart';
+
+Future<PermissionState> _defaultRequest() =>
+    PhotoManager.requestPermissionExtend();
+Future<void> _defaultOpenSettings() => PhotoManager.openSetting();
+
+enum _Perm { initial, requesting, denied }
+
+/// Onboarding 3 bước + màn xin quyền Ảnh. Không lưu cờ "đã xem" xuống đĩa
+/// (app stateless): nơi gọi quyết định có hiển thị hay không.
+class OnboardingFlow extends StatefulWidget {
+  const OnboardingFlow({
+    super.key,
+    required this.onFinished,
+    this.requestPermission = _defaultRequest,
+    this.openSettings = _defaultOpenSettings,
+  });
+
+  final VoidCallback onFinished;
+  final Future<PermissionState> Function() requestPermission;
+  final Future<void> Function() openSettings;
+
+  @override
+  State<OnboardingFlow> createState() => _OnboardingFlowState();
+}
+
+class _OnboardingFlowState extends State<OnboardingFlow> {
+  static const int _permStep = 3;
+  int _step = 0;
+  _Perm _perm = _Perm.initial;
+
+  void _go(int step) => setState(() => _step = step);
+
+  Future<void> _allow() async {
+    if (_perm == _Perm.requesting) return;
+    setState(() => _perm = _Perm.requesting);
+    PermissionState result;
+    try {
+      result = await widget.requestPermission();
+    } catch (_) {
+      result = PermissionState.denied;
+    }
+    if (!mounted) return;
+    if (result.hasAccess) {
+      widget.onFinished();
+    } else {
+      setState(() => _perm = _Perm.denied);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final bg = dark ? const Color(0xFF121212) : const Color(0xFFF8F8F8);
+    return Scaffold(
+      backgroundColor: bg,
+      body: SafeArea(
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 250),
+          child: KeyedSubtree(
+            key: ValueKey(_step),
+            child: _step == _permStep ? _permissionPage(dark) : _introPage(dark),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ---- intro (3 bước) ----
+  static const _intro = <_IntroData>[
+    _IntroData(
+      title: 'Điện thoại gọn gàng bắt đầu từ đây',
+      body: 'Giải phóng bộ nhớ và giữ thư viện ảnh ngăn nắp.',
+      cta: 'Bắt đầu',
+      icon: Icons.auto_awesome_outlined,
+    ),
+    _IntroData(
+      title: 'Tìm và xóa ảnh giống nhau',
+      body: 'Phát hiện ảnh trùng và ảnh tương tự để lấy lại dung lượng.',
+      cta: 'Tiếp tục',
+      icon: Icons.photo_library_outlined,
+      badge: 'Ảnh trùng',
+    ),
+    _IntroData(
+      title: 'Quét 100% trên thiết bị',
+      body: 'Ảnh không rời khỏi máy. Không tài khoản, không lưu lịch sử, '
+          'chỉ xóa khi bạn xác nhận.',
+      cta: 'Tiếp tục',
+      icon: Icons.lock_outline,
+    ),
+  ];
+
+  Widget _introPage(bool dark) {
+    final d = _intro[_step];
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+      child: Column(
+        children: [
+          SizedBox(
+            height: 56,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(children: [
+                  Icon(Icons.cleaning_services_outlined, color: cs.onSurface),
+                  const SizedBox(width: 8),
+                  Text('Cleanify',
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w700)),
+                ]),
+                TextButton(
+                  onPressed: () => _go(_permStep),
+                  child: const Text('Bỏ qua'),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: Center(child: _Hero(data: d, dark: dark)),
+          ),
+          Text(d.title,
+              textAlign: TextAlign.center,
+              style: Theme.of(context)
+                  .textTheme
+                  .headlineSmall
+                  ?.copyWith(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 10),
+          Text(d.body,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium),
+          const SizedBox(height: 24),
+          _Dots(index: _step, dark: dark),
+          const SizedBox(height: 24),
+          _PrimaryButton(
+            label: d.cta,
+            onPressed: () => _go(_step + 1),
+          ),
+          SizedBox(
+            height: 48,
+            child: _step > 0
+                ? TextButton(
+                    onPressed: () => _go(_step - 1),
+                    child: const Text('Quay lại'),
+                  )
+                : null,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---- quyền Ảnh ----
+  Widget _permissionPage(bool dark) {
+    final denied = _perm == _Perm.denied;
+    final requesting = _perm == _Perm.requesting;
+    final cs = Theme.of(context).colorScheme;
+    final card = dark ? const Color(0xFF1E1E1E) : Colors.white;
+    final line = dark ? const Color(0xFF333333) : const Color(0xFFE7E7E7);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            height: 56,
+            child: Row(children: [
+              IconButton(
+                tooltip: 'Quay lại',
+                onPressed: () => _go(2),
+                icon: const Icon(Icons.arrow_back_ios_new, size: 18),
+              ),
+              const Expanded(
+                child: Text('Cho phép truy cập Ảnh',
+                    textAlign: TextAlign.center,
+                    style:
+                        TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+              ),
+              const SizedBox(width: 48),
+            ]),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Cleanify cần đọc thư viện ảnh để tìm ảnh trùng và ảnh tương tự. '
+            'Việc quét diễn ra hoàn toàn trên thiết bị.',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 20),
+          Container(
+            height: 160,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: line),
+            ),
+            child: Center(
+              child: Container(
+                width: 88,
+                height: 88,
+                decoration: BoxDecoration(
+                  color: card,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: line),
+                ),
+                child: Icon(Icons.photo_library_outlined,
+                    size: 36, color: cs.onSurface),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: card,
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: line),
+            ),
+            child: Row(children: [
+              Icon(Icons.image_outlined, color: cs.onSurface),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Quyền truy cập Ảnh',
+                        style: TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 2),
+                    Text('Cần để quét và đề xuất ảnh có thể dọn.',
+                        style: Theme.of(context).textTheme.bodySmall),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              _Pill(label: denied ? 'Bị từ chối' : 'Chưa cấp', dark: dark),
+            ]),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: dark ? const Color(0xFF1A1A1A) : const Color(0xFFF8F8F8),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: line),
+            ),
+            child: Text(
+              denied
+                  ? 'Quyền Ảnh đang bị tắt. Mở Cài đặt để bật lại; nếu không, '
+                      'Cleanify không thể quét.'
+                  : 'Bạn có thể chọn Toàn bộ hoặc Giới hạn. Nếu không cấp '
+                      'quyền, Cleanify không thể quét ảnh.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+          const Spacer(),
+          _PrimaryButton(
+            label: denied ? 'Mở Cài đặt' : 'Cho phép',
+            busy: requesting,
+            onPressed: denied ? widget.openSettings : _allow,
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 52,
+            child: OutlinedButton(
+              onPressed: requesting ? null : widget.onFinished,
+              style: OutlinedButton.styleFrom(
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16)),
+              ),
+              child: const Text('Để sau'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _IntroData {
+  const _IntroData({
+    required this.title,
+    required this.body,
+    required this.cta,
+    required this.icon,
+    this.badge,
+  });
+  final String title;
+  final String body;
+  final String cta;
+  final IconData icon;
+  final String? badge;
+}
+
+const Color kOnboardingAccent = Color(0xFF70849F);
+
+class _PrimaryButton extends StatelessWidget {
+  const _PrimaryButton(
+      {required this.label, required this.onPressed, this.busy = false});
+  final String label;
+  final VoidCallback? onPressed;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 56,
+      child: FilledButton(
+        onPressed: busy ? null : onPressed,
+        style: FilledButton.styleFrom(
+          backgroundColor: kOnboardingAccent,
+          foregroundColor: Colors.white,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        ),
+        child: busy
+            ? const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white),
+              )
+            : Text(label),
+      ),
+    );
+  }
+}
+
+class _Dots extends StatelessWidget {
+  const _Dots({required this.index, required this.dark});
+  final int index;
+  final bool dark;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'Bước ${index + 1} trên 3',
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          for (var i = 0; i < 3; i++)
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              margin: const EdgeInsets.symmetric(horizontal: 4),
+              width: i == index ? 24 : 8,
+              height: 8,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(4),
+                color: i == index
+                    ? kOnboardingAccent
+                    : (dark ? const Color(0xFF444444) : const Color(0xFFD0D0D0)),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Pill extends StatelessWidget {
+  const _Pill({required this.label, required this.dark});
+  final String label;
+  final bool dark;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: dark ? const Color(0xFF2A2A2A) : const Color(0xFFF3F3F3),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(label,
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+    );
+  }
+}
+
+/// Hình minh họa tạm bằng icon. Thay bằng ảnh hero từ Figma khi có file gốc.
+class _Hero extends StatelessWidget {
+  const _Hero({required this.data, required this.dark});
+  final _IntroData data;
+  final bool dark;
+
+  @override
+  Widget build(BuildContext context) {
+    final glass = dark ? const Color(0xFF1E1E1E) : Colors.white;
+    return Stack(
+      clipBehavior: Clip.none,
+      alignment: Alignment.center,
+      children: [
+        Container(
+          width: 260,
+          height: 260,
+          decoration: BoxDecoration(
+            color: glass,
+            borderRadius: BorderRadius.circular(40),
+            boxShadow: const [
+              BoxShadow(
+                  color: Color(0x14000000), blurRadius: 36, offset: Offset(0, 16)),
+            ],
+          ),
+          child: Icon(data.icon, size: 96, color: kOnboardingAccent),
+        ),
+        if (data.badge != null)
+          Positioned(
+            right: -4,
+            bottom: -8,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+              decoration: BoxDecoration(
+                color: glass,
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: const Color(0x4DC6C6C6)),
+              ),
+              child: Text(data.badge!,
+                  style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: .66)),
+            ),
+          ),
+      ],
+    );
+  }
+}
